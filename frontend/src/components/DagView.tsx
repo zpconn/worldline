@@ -34,12 +34,26 @@ const DagView: React.FC<Props> = ({ config }) => {
     return { nodes, edges };
   }, [config]);
 
+  const containerHeight = useMemo(() => {
+    if (nodes.length === 0) return 420;
+    const maxY = Math.max(...nodes.map((n) => n.position.y));
+    return Math.max(420, maxY + 220);
+  }, [nodes]);
+
   if (!config) {
     return <div style={{ opacity: 0.6 }}>Provide a valid config to view the DAG.</div>;
   }
 
   return (
-    <div style={{ height: 420, background: "#0f172a", borderRadius: 8, border: "1px solid #1f2937" }}>
+    <div
+      style={{
+        height: containerHeight,
+        background: "#0f172a",
+        borderRadius: 8,
+        border: "1px solid #1f2937",
+        transition: "height 160ms ease",
+      }}
+    >
       <ReactFlow nodes={nodes} edges={edges} fitView>
         <Background />
         <MiniMap />

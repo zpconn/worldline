@@ -13,11 +13,19 @@ import {
 
 type Props = {
   result: any;
+  simulating?: boolean;
 };
 
-const SimulationResults: React.FC<Props> = ({ result }) => {
+const SimulationResults: React.FC<Props> = ({ result, simulating = false }) => {
+  const showProgress = simulating;
+
   if (!result) {
-    return <div style={{ opacity: 0.6 }}>Run simulations to see metrics.</div>;
+    return (
+      <div style={{ position: "relative" }}>
+        {showProgress && <LiveProgress />}
+        <div style={{ opacity: 0.6 }}>Run simulations to see metrics.</div>
+      </div>
+    );
   }
 
   const scenarios10 = (result.all_scenarios || []).filter((s: any) => s.horizon_years === 10);
@@ -53,7 +61,8 @@ const SimulationResults: React.FC<Props> = ({ result }) => {
   const tornadoDomain = paddedSymmetricDomain(tornado.flatMap((d: any) => [d.lowDelta, d.highDelta]));
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 16 }}>
+    <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 16, position: "relative" }}>
+      {showProgress && <LiveProgress />}
       <div>
         <div style={pillRow}>
           <SummaryCard title="Best 5Y" scenario={result.best_5y} />
@@ -261,5 +270,121 @@ const summaryCard: React.CSSProperties = {
 };
 const th: React.CSSProperties = { textAlign: "left", padding: "6px 4px", borderBottom: "1px solid #1f2937" };
 const td: React.CSSProperties = { padding: "6px 4px", borderBottom: "1px solid #1f2937" };
+
+const LiveProgress: React.FC = () => (
+  <>
+    <style>{progressCss}</style>
+    <div className="sim-progress-shell">
+      <div className="sim-progress-content">
+        <div className="sim-progress-header">
+          <div className="sim-progress-pip" />
+          <span>Simulation running</span>
+        </div>
+        <div className="sim-progress-sub">Monte Carlo sweeps in flight across all cores</div>
+        <div className="sim-progress-bar">
+          <div className="sim-progress-fill" />
+          <div className="sim-progress-glow" />
+        </div>
+        <div className="sim-progress-spark one" />
+        <div className="sim-progress-spark two" />
+        <div className="sim-progress-spark three" />
+      </div>
+    </div>
+  </>
+);
+
+const progressCss = `
+.sim-progress-shell {
+  position: absolute;
+  inset: -8px;
+  padding: 8px;
+  border-radius: 14px;
+  backdrop-filter: blur(6px);
+  background: radial-gradient(circle at 20% 30%, rgba(56,189,248,0.08), transparent 45%), radial-gradient(circle at 80% 70%, rgba(168,85,247,0.08), transparent 45%);
+  border: 1px solid rgba(148,163,184,0.2);
+  z-index: 5;
+}
+.sim-progress-content {
+  position: relative;
+  background: linear-gradient(135deg, rgba(15,23,42,0.9), rgba(17,24,39,0.9));
+  border: 1px solid rgba(148,163,184,0.25);
+  border-radius: 10px;
+  padding: 12px 14px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.35);
+  overflow: hidden;
+}
+.sim-progress-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+.sim-progress-sub {
+  font-size: 12px;
+  opacity: 0.75;
+  margin-top: 2px;
+  margin-bottom: 8px;
+}
+.sim-progress-pip {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #38bdf8, #22c55e);
+  box-shadow: 0 0 12px rgba(34,197,94,0.8), 0 0 20px rgba(56,189,248,0.6);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.sim-progress-bar {
+  position: relative;
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(148,163,184,0.15);
+  overflow: hidden;
+}
+.sim-progress-fill {
+  position: absolute;
+  inset: 0;
+  width: 60%;
+  background: linear-gradient(90deg, #0ea5e9, #a855f7, #22c55e, #0ea5e9);
+  background-size: 200% 100%;
+  animation: wave 1.8s linear infinite;
+  filter: drop-shadow(0 0 12px rgba(56,189,248,0.5));
+}
+.sim-progress-glow {
+  position: absolute;
+  inset: -18px -6px;
+  background: radial-gradient(circle at 20% 50%, rgba(14,165,233,0.35), transparent 40%),
+              radial-gradient(circle at 70% 50%, rgba(168,85,247,0.3), transparent 40%);
+  filter: blur(20px);
+  pointer-events: none;
+}
+.sim-progress-spark {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(56,189,248,0.9);
+  filter: blur(1px);
+  animation: float 1.8s ease-in-out infinite;
+}
+.sim-progress-spark.one { top: 8px; left: 20%; animation-delay: 0s; }
+.sim-progress-spark.two { top: 10px; left: 55%; animation-delay: 0.25s; background: rgba(168,85,247,0.9); }
+.sim-progress-spark.three { top: 6px; left: 80%; animation-delay: 0.5s; background: rgba(34,197,94,0.9); }
+@keyframes wave {
+  0% { transform: translateX(-40%); background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { transform: translateX(40%); background-position: 0% 50%; }
+}
+@keyframes pulse {
+  0% { transform: scale(0.98); opacity: 0.8; }
+  50% { transform: scale(1.08); opacity: 1; }
+  100% { transform: scale(0.98); opacity: 0.8; }
+}
+@keyframes float {
+  0% { transform: translateY(0); opacity: 0.9; }
+  50% { transform: translateY(-6px); opacity: 0.6; }
+  100% { transform: translateY(0); opacity: 0.9; }
+}
+`;
 
 export default SimulationResults;

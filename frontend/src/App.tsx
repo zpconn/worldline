@@ -275,7 +275,7 @@ function App() {
         </section>
         <section style={{ ...cardStyle, gridColumn: "1 / span 2" }}>
           <h2 style={sectionTitle}>Simulation & Results</h2>
-          <SimulationResults result={result} />
+          <SimulationResults result={result} simulating={simulating} />
         </section>
         <section style={{ ...cardStyle, gridColumn: "1 / span 2" }}>
           <h2 style={sectionTitle}>How to Use & Glossary</h2>

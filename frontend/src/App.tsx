@@ -278,7 +278,7 @@ function App() {
           <SimulationResults result={result} />
         </section>
         <section style={{ ...cardStyle, gridColumn: "1 / span 2" }}>
-          <h2 style={sectionTitle}>How to Run & Glossary</h2>
+          <h2 style={sectionTitle}>How to Use & Glossary</h2>
           <Instructions />
         </section>
       </main>
@@ -337,12 +337,13 @@ export default App;
 const Instructions = () => (
   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
     <div>
-      <h3 style={{ marginTop: 0, marginBottom: 6 }}>Quick run steps (local)</h3>
+      <h3 style={{ marginTop: 0, marginBottom: 6 }}>Conceptual flow</h3>
       <ol style={{ margin: 0, paddingLeft: 20, lineHeight: 1.5 }}>
-        <li>Start backend: `cd backend && .\\.venv\\Scripts\\activate` then `uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload`.</li>
-        <li>Start frontend: `cd frontend && npm install && npm run dev` (open http://localhost:5173).</li>
-        <li>Use the builder or JSON, click Save Config (or Run Simulations to auto-save) to send it to the API.</li>
-        <li>Use Export JSON to download the last simulation result.</li>
+        <li>Define locations and portfolio assumptions to set your baseline cost of living and savings path.</li>
+        <li>Map states (roles/contexts) and transitions (moves) as a DAG with hazards and pay/relocation deltas.</li>
+        <li>Create strategies that pick starting states and constrain moves (preferred/disallowed locations, paycut floors).</li>
+        <li>Tweak scoring weights and risk settings, then run simulations to compare strategies on utility, EV, and downside.</li>
+        <li>Inspect results, adjust the graph/assumptions, and re-run to explore alternative worldlines.</li>
       </ol>
     </div>
     <div>

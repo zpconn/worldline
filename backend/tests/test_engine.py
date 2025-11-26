@@ -165,6 +165,96 @@ def test_simulation_deterministic_with_seed():
     assert util1 == util2
 
 
+def test_parallel_matches_serial_with_seed_sequence_process_pool():
+    loc, comp, portfolio, _ = _base_components()
+    settings = SimulationSettings(
+        num_runs_per_scenario=12,
+        random_seed=21,
+        horizon_years_short=3,
+        horizon_years_long=5,
+    )
+    state = CareerState(
+        id="stay",
+        label="Stay",
+        role_title="Engineer",
+        location_id=loc.id,
+        employment_status="employed",
+        compensation=comp,
+    )
+    strategy = Strategy(id="s", name="S", description="", initial_choice_state_ids=[state.id])
+    seed_serial = np.random.SeedSequence(999)
+    seed_parallel = np.random.SeedSequence(999)
+    serial_short, serial_long = _simulate_scenario(
+        strategy=strategy,
+        initial_state_id=state.id,
+        states={state.id: state},
+        locations={loc.id: loc},
+        transitions_by_from={},
+        portfolio_settings=portfolio,
+        scoring_weights=ScoringWeights(),
+        settings=settings,
+        seed_sequence=seed_serial.spawn(1)[0],
+        parallel=False,
+    )
+    parallel_short, parallel_long = _simulate_scenario(
+        strategy=strategy,
+        initial_state_id=state.id,
+        states={state.id: state},
+        locations={loc.id: loc},
+        transitions_by_from={},
+        portfolio_settings=portfolio,
+        scoring_weights=ScoringWeights(),
+        settings=settings,
+        seed_sequence=seed_parallel.spawn(1)[0],
+        parallel=True,
+        max_workers=2,
+        executor="process",
+    )
+    assert parallel_short.utility_score == pytest.approx(serial_short.utility_score)
+    assert parallel_long.portfolio_stats["mean"] == pytest.approx(serial_long.portfolio_stats["mean"])
+    assert parallel_short.downside["p_liquid_lt_1x_col"] == pytest.approx(serial_short.downside["p_liquid_lt_1x_col"])
+
+
+def test_thread_executor_matches_serial_and_is_forced_for_stub_rng():
+    loc, comp, portfolio, settings = _base_components()
+    settings = settings.copy(update={"num_runs_per_scenario": 3, "random_seed": 11, "horizon_years_short": 2, "horizon_years_long": 3})
+    state = CareerState(
+        id="stay",
+        label="Stay",
+        role_title="Engineer",
+        location_id=loc.id,
+        employment_status="employed",
+        compensation=comp,
+    )
+    strategy = Strategy(id="s", name="S", description="", initial_choice_state_ids=[state.id])
+    serial_short, _ = _simulate_scenario(
+        strategy=strategy,
+        initial_state_id=state.id,
+        states={state.id: state},
+        locations={loc.id: loc},
+        transitions_by_from={},
+        portfolio_settings=portfolio,
+        scoring_weights=ScoringWeights(),
+        settings=settings,
+        parallel=False,
+    )
+    parallel_short, _ = _simulate_scenario(
+        strategy=strategy,
+        initial_state_id=state.id,
+        states={state.id: state},
+        locations={loc.id: loc},
+        transitions_by_from={},
+        portfolio_settings=portfolio,
+        scoring_weights=ScoringWeights(),
+        settings=settings,
+        rng=DummyRNG(),
+        parallel=True,
+        executor="thread",
+        max_workers=4,
+    )
+    assert parallel_short.utility_score == pytest.approx(serial_short.utility_score)
+
+
 def test_best_selection_prefers_higher_location_fit():
     loc, comp, portfolio, settings = _base_components()
     states = [
@@ -1050,11 +1140,48 @@ def test_simulate_config_override_settings_applied():
     assert res.assumptions["time_step_months"] == override.time_step_months
 
 
+def test_simulate_config_reports_worker_count():
+    loc = Location(id="loc", name="Loc", col_annual=0, state_tax_rate=0.0)
+    state = CareerState(
+        id="state",
+        label="State",
+        role_title="Engineer",
+        location_id=loc.id,
+        employment_status="employed",
+        compensation=Compensation(base_annual=80000, bonus_target_annual=0, bonus_prob_pay=0.0),
+    )
+    settings = SimulationSettings(num_runs_per_scenario=4, random_seed=3)
+    cfg = ConfigPayload(
+        locations=[loc],
+        portfolio_settings=PortfolioSettings(initial_liquid=0, mean_annual_return=0.05, std_annual_return=0.1),
+        career_states=[state],
+        transitions=[],
+        strategies=[Strategy(id="s", name="S", description="", initial_choice_state_ids=[state.id])],
+        scoring_weights=ScoringWeights(),
+        simulation_settings=settings,
+    )
+    res = simulate_config(cfg, override_settings=settings, max_workers=2, executor="process")
+    assert res.assumptions["max_workers"] == 2
+    assert res.assumptions["executor"] == "process"
+
+
 def test_simulation_settings_and_transition_validation():
     with pytest.raises(ValueError):
         SimulationSettings(time_step_months=0)
     with pytest.raises(ValueError):
         Transition(id="bad", from_state_id="a", to_state_id="b", type="move", base_annual_prob=-0.1)
+    with pytest.raises(ValueError):
+        _simulate_scenario(
+            strategy=Strategy(id="s", name="S", description="", initial_choice_state_ids=["a"]),
+            initial_state_id="a",
+            states={},
+            locations={},
+            transitions_by_from={},
+            portfolio_settings=PortfolioSettings(initial_liquid=0, mean_annual_return=0, std_annual_return=0),
+            scoring_weights=ScoringWeights(),
+            settings=SimulationSettings(num_runs_per_scenario=0),
+            parallel=False,
+        )
 
 
 def test_cost_of_living_zero_safe_min_ratio():

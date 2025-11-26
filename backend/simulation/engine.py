@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import copy
 import math
+import os
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
@@ -76,7 +79,53 @@ def _scenario_label(strategy: Strategy, initial_state_id: str, states: Dict[str,
     return f"{strategy.name} | start: {state_label}"
 
 
-def simulate_config(config: ConfigPayload, override_settings: SimulationSettings | None = None) -> SimulationResult:
+@dataclass
+class _RunResult:
+    npv_short: float
+    npv_long: float
+    final_portfolio_short: float
+    final_portfolio_long: float
+    min_ratio: float
+    unemployment_6: bool
+    unemployment_12: bool
+    unemployment_24: bool
+    lower_pay_reentry: bool
+    haircut_values: List[float]
+    career_capital_score: float
+    enjoyment_score: float
+    location_fit_score: float
+    location_counts: Dict[str, int]
+
+
+def _resolve_max_workers(max_workers: int | None, runs: int) -> int:
+    if runs <= 1:
+        return 1
+    if max_workers is None:
+        return max(1, min(runs, os.cpu_count() or 1))
+    return max(1, min(max_workers, runs))
+
+
+def _chunk(items: List[Any], size: int) -> List[List[Any]]:
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+def _choose_executor(parallel: bool, executor: str, rng: Any) -> str:
+    if not parallel:
+        return "none"
+    if rng is not None and not isinstance(rng, np.random.Generator):
+        return "none"
+    if executor not in ("process", "thread", "none"):
+        return "process"
+    return executor
+
+
+def simulate_config(
+    config: ConfigPayload,
+    override_settings: SimulationSettings | None = None,
+    parallel: bool = True,
+    max_workers: int | None = None,
+    executor: str = "process",
+) -> SimulationResult:
     settings = override_settings or config.simulation_settings
     states: Dict[str, CareerState] = {s.id: s for s in config.career_states}
     locations: Dict[str, Location] = {l.id: l for l in config.locations}
@@ -86,9 +135,10 @@ def simulate_config(config: ConfigPayload, override_settings: SimulationSettings
 
     _validate_dag(states, transitions_by_from, settings)
 
-    rng = np.random.default_rng(settings.random_seed)
-
     scenario_results: List[ScenarioResult] = []
+    scenario_count = sum(len(s.initial_choice_state_ids) for s in config.strategies)
+    scenario_seeds = np.random.SeedSequence(settings.random_seed).spawn(scenario_count) if scenario_count else []
+    scenario_idx = 0
     for strategy in config.strategies:
         for init_state in strategy.initial_choice_state_ids:
             res_short, res_long = _simulate_scenario(
@@ -100,8 +150,12 @@ def simulate_config(config: ConfigPayload, override_settings: SimulationSettings
                 portfolio_settings=config.portfolio_settings,
                 scoring_weights=config.scoring_weights,
                 settings=settings,
-                rng=rng,
+                seed_sequence=scenario_seeds[scenario_idx] if scenario_idx < len(scenario_seeds) else None,
+                parallel=parallel,
+                max_workers=max_workers,
+                executor=executor,
             )
+            scenario_idx += 1
             scenario_results.extend([res_short, res_long])
 
     best_5y = _best_for_horizon(scenario_results, 5)
@@ -115,6 +169,10 @@ def simulate_config(config: ConfigPayload, override_settings: SimulationSettings
         "risk_penalty_lambda": settings.risk_penalty_lambda,
         "cvar_alpha": settings.cvar_alpha,
         "num_runs_per_scenario": settings.num_runs_per_scenario,
+        "max_workers": _resolve_max_workers(max_workers, settings.num_runs_per_scenario)
+        if _choose_executor(parallel, executor, None) != "none"
+        else 1,
+        "executor": _choose_executor(parallel, executor, None),
     }
 
     return SimulationResult(
@@ -127,6 +185,164 @@ def simulate_config(config: ConfigPayload, override_settings: SimulationSettings
     )
 
 
+def _simulate_single_run(
+    strategy: Strategy,
+    initial_state_id: str,
+    states: Dict[str, CareerState],
+    locations: Dict[str, Location],
+    transitions_by_from: Dict[str, List[Transition]],
+    portfolio_settings: PortfolioSettings,
+    settings: SimulationSettings,
+    rng: Any,
+) -> _RunResult:
+    horizon_long_months = settings.horizon_years_long * 12
+    horizon_short_months = settings.horizon_years_short * 12
+    step_months = settings.time_step_months
+
+    state_id = initial_state_id
+    month = 0
+    portfolio = portfolio_settings.initial_liquid
+    cash_flows: List[float] = []
+    longest_unemp = 0
+    current_unemp = 0
+    comp_adjust_factor = 1.0
+    last_comp_total = _total_comp(states[state_id].compensation)
+    min_ratio_run = np.inf
+    location_counts: Dict[str, int] = {}
+    identity_sum = 0.0
+    portability_sum = 0.0
+    wellbeing_sum = 0.0
+    steps = 0
+    haircut_list: List[float] = []
+    final_portfolio_short = 0.0
+    lower_pay_reentry = False
+
+    while month <= horizon_long_months:
+        state = states[state_id]
+        loc = locations[state.location_id]
+        net_cash = _calc_monthly_cash_flow(state, loc, month, comp_adjust_factor)
+        contribution = max(net_cash, 0.0) * portfolio_settings.contribution_rate
+        net_cash_after_contrib = net_cash - contribution
+        step_mean, step_std = _annual_to_step_params(
+            portfolio_settings.mean_annual_return,
+            portfolio_settings.std_annual_return,
+            step_months,
+        )
+        monthly_return = rng.normal(step_mean, step_std)
+        portfolio = max(0.0, (portfolio + net_cash_after_contrib + contribution) * (1.0 + monthly_return))
+        cash_flows.append(net_cash_after_contrib)
+
+        col_ratio = portfolio / max(1e-6, loc.col_annual / 12.0)
+        min_ratio_run = min(min_ratio_run, col_ratio)
+
+        location_counts[state.location_id] = location_counts.get(state.location_id, 0) + 1
+        identity_sum += state.identity_brand.internal_stature
+        portability_sum += state.identity_brand.external_portability
+        wellbeing_sum += state.wellbeing
+        steps += 1
+
+        if state.employment_status.lower() == "unemployed":
+            current_unemp += step_months
+            longest_unemp = max(longest_unemp, current_unemp)
+        else:
+            if current_unemp > 0 and state.compensation:
+                new_comp_total = _total_comp(state.compensation) * comp_adjust_factor
+                if last_comp_total > 0 and new_comp_total < last_comp_total:
+                    lower_pay_reentry = True
+                    haircut_list.append((new_comp_total - last_comp_total) / last_comp_total)
+                last_comp_total = new_comp_total
+            current_unemp = 0
+
+        if month >= horizon_short_months and final_portfolio_short == 0.0:
+            final_portfolio_short = portfolio
+
+        chosen_transition, lag = _select_transition(
+            state_id,
+            strategy,
+            states,
+            transitions_by_from,
+            settings,
+            rng,
+        )
+        if chosen_transition:
+            comp_adjust_factor = 1.0 + (chosen_transition.delta.comp_adjustment_pct or 0.0)
+            if chosen_transition.delta.relocation_cost:
+                portfolio = max(0.0, portfolio - chosen_transition.delta.relocation_cost)
+            state_id = chosen_transition.to_state_id
+        else:
+            comp_adjust_factor = 1.0
+
+        month += step_months + (lag or 0)
+
+    npv_short_val = _npv(cash_flows, settings.discount_rate_real, step_months, horizon_short_months)
+    npv_long_val = _npv(cash_flows, settings.discount_rate_real, step_months, horizon_long_months)
+    final_portfolio_long = portfolio
+
+    total_steps = max(steps, 1)
+    career_capital = (identity_sum + portability_sum) / (2 * total_steps)
+    enjoyment = wellbeing_sum / total_steps
+    preferred = 0
+    if strategy.preferred_locations:
+        for loc_id, count in location_counts.items():
+            if loc_id in strategy.preferred_locations:
+                preferred += count
+    location_fit = preferred / total_steps if total_steps else 0.0
+
+    return _RunResult(
+        npv_short=npv_short_val,
+        npv_long=npv_long_val,
+        final_portfolio_short=final_portfolio_short,
+        final_portfolio_long=final_portfolio_long,
+        min_ratio=min_ratio_run,
+        unemployment_6=longest_unemp >= 6,
+        unemployment_12=longest_unemp >= 12,
+        unemployment_24=longest_unemp >= 24,
+        lower_pay_reentry=lower_pay_reentry,
+        haircut_values=haircut_list,
+        career_capital_score=career_capital,
+        enjoyment_score=enjoyment,
+        location_fit_score=location_fit,
+        location_counts=location_counts,
+    )
+
+
+def _run_batch(
+    strategy: Strategy,
+    initial_state_id: str,
+    states: Dict[str, CareerState],
+    locations: Dict[str, Location],
+    transitions_by_from: Dict[str, List[Transition]],
+    portfolio_settings: PortfolioSettings,
+    settings: SimulationSettings,
+    seed_batch: List[np.random.SeedSequence],
+) -> List[_RunResult]:
+    results: List[_RunResult] = []
+    for seq in seed_batch:
+        rng = np.random.default_rng(seq)
+        results.append(
+            _simulate_single_run(
+                strategy=strategy,
+                initial_state_id=initial_state_id,
+                states=states,
+                locations=locations,
+                transitions_by_from=transitions_by_from,
+                portfolio_settings=portfolio_settings,
+                settings=settings,
+                rng=rng,
+            )
+        )
+    return results
+
+
+def _run_batch_process(args: Tuple[Any, ...]) -> List[_RunResult]:
+    return _run_batch(*args)
+
+
+def _run_batch_thread(args: Tuple[Any, ...]) -> List[_RunResult]:
+    # Thread pool fallback shares code with process pool; kept separate for clarity.
+    return _run_batch(*args)
+
+
 def _simulate_scenario(
     strategy: Strategy,
     initial_state_id: str,
@@ -136,120 +352,88 @@ def _simulate_scenario(
     portfolio_settings: PortfolioSettings,
     scoring_weights: ScoringWeights,
     settings: SimulationSettings,
-    rng: np.random.Generator,
+    rng: np.random.Generator | None = None,
+    seed_sequence: np.random.SeedSequence | None = None,
+    parallel: bool = True,
+    max_workers: int | None = None,
+    executor: str = "process",
 ) -> Tuple[ScenarioResult, ScenarioResult]:
-    horizon_long_months = settings.horizon_years_long * 12
-    horizon_short_months = settings.horizon_years_short * 12
-    step_months = settings.time_step_months
     runs = settings.num_runs_per_scenario
+    if runs <= 0:
+        raise ValueError("num_runs_per_scenario must be positive")
+    mode = _choose_executor(parallel, executor, rng)
+    worker_count = _resolve_max_workers(max_workers, runs) if mode != "none" else 1
 
-    npv_short = np.zeros(runs)
-    npv_long = np.zeros(runs)
-    final_portfolio_short = np.zeros(runs)
-    final_portfolio_long = np.zeros(runs)
-    min_ratio = np.full(runs, np.inf)
-    unemployment_6 = np.zeros(runs, dtype=bool)
-    unemployment_12 = np.zeros(runs, dtype=bool)
-    unemployment_24 = np.zeros(runs, dtype=bool)
-    lower_pay_reentry = np.zeros(runs, dtype=bool)
+    if mode == "none":
+        if rng is not None and not isinstance(rng, np.random.Generator):
+            run_rngs = [rng] * runs
+        else:
+            seed_seq = seed_sequence or np.random.SeedSequence(settings.random_seed)
+            run_rngs = [np.random.default_rng(seq) for seq in seed_seq.spawn(runs)]
+        run_results = [
+            _simulate_single_run(
+                strategy=strategy,
+                initial_state_id=initial_state_id,
+                states=states,
+                locations=locations,
+                transitions_by_from=transitions_by_from,
+                portfolio_settings=portfolio_settings,
+                settings=settings,
+                rng=run_rng,
+            )
+            for run_rng in run_rngs
+        ]
+    else:
+        seed_seq = seed_sequence or np.random.SeedSequence(settings.random_seed)
+        child_sequences = seed_seq.spawn(runs)
+        target_tasks = max(1, worker_count * 4)
+        batch_size = max(1, math.ceil(runs / target_tasks))
+        batches = _chunk(child_sequences, batch_size)
+
+        worker_func = _run_batch_process if mode == "process" else _run_batch_thread
+        ExecutorCls = ProcessPoolExecutor if mode == "process" else ThreadPoolExecutor
+
+        with ExecutorCls(max_workers=worker_count) as pool:
+            run_results = []
+            for batch_results in pool.map(
+                worker_func,
+                [
+                    (
+                        strategy,
+                        initial_state_id,
+                        states,
+                        locations,
+                        transitions_by_from,
+                        portfolio_settings,
+                        settings,
+                        batch,
+                    )
+                    for batch in batches
+                ],
+            ):
+                run_results.extend(batch_results)
+
+    npv_short = np.array([r.npv_short for r in run_results])
+    npv_long = np.array([r.npv_long for r in run_results])
+    final_portfolio_short = np.array([r.final_portfolio_short for r in run_results])
+    final_portfolio_long = np.array([r.final_portfolio_long for r in run_results])
+    min_ratio = np.array([r.min_ratio for r in run_results])
+    unemployment_6 = np.array([r.unemployment_6 for r in run_results])
+    unemployment_12 = np.array([r.unemployment_12 for r in run_results])
+    unemployment_24 = np.array([r.unemployment_24 for r in run_results])
+    lower_pay_reentry = np.array([r.lower_pay_reentry for r in run_results])
     haircut_values: List[float] = []
     location_time_accum: Dict[str, float] = {}
     career_capital_scores: List[float] = []
     enjoyment_scores: List[float] = []
     location_fit_scores: List[float] = []
 
-    for run in range(runs):
-        state_id = initial_state_id
-        month = 0
-        portfolio = portfolio_settings.initial_liquid
-        cash_flows: List[float] = []
-        longest_unemp = 0
-        current_unemp = 0
-        comp_adjust_factor = 1.0
-        last_comp_total = _total_comp(states[state_id].compensation)
-        min_ratio_run = np.inf
-        location_counts: Dict[str, int] = {}
-        identity_sum = 0.0
-        portability_sum = 0.0
-        wellbeing_sum = 0.0
-        steps = 0
-        haircut_list: List[float] = []
-        while month <= horizon_long_months:
-            state = states[state_id]
-            loc = locations[state.location_id]
-            net_cash = _calc_monthly_cash_flow(state, loc, month, comp_adjust_factor)
-            contribution = max(net_cash, 0.0) * portfolio_settings.contribution_rate
-            net_cash_after_contrib = net_cash - contribution
-            step_mean, step_std = _annual_to_step_params(
-                portfolio_settings.mean_annual_return,
-                portfolio_settings.std_annual_return,
-                step_months,
-            )
-            monthly_return = rng.normal(step_mean, step_std)
-            portfolio = max(0.0, (portfolio + net_cash_after_contrib + contribution) * (1.0 + monthly_return))
-            cash_flows.append(net_cash_after_contrib)
-
-            col_ratio = portfolio / max(1e-6, loc.col_annual / 12.0)
-            min_ratio_run = min(min_ratio_run, col_ratio)
-
-            location_counts[state.location_id] = location_counts.get(state.location_id, 0) + 1
-            identity_sum += state.identity_brand.internal_stature
-            portability_sum += state.identity_brand.external_portability
-            wellbeing_sum += state.wellbeing
-            steps += 1
-
-            if state.employment_status.lower() == "unemployed":
-                current_unemp += step_months
-                longest_unemp = max(longest_unemp, current_unemp)
-            else:
-                if current_unemp > 0 and state.compensation:
-                    new_comp_total = _total_comp(state.compensation) * comp_adjust_factor
-                    if last_comp_total > 0 and new_comp_total < last_comp_total:
-                        lower_pay_reentry[run] = True
-                        haircut_list.append((new_comp_total - last_comp_total) / last_comp_total)
-                    last_comp_total = new_comp_total
-                current_unemp = 0
-
-            if month >= horizon_short_months and final_portfolio_short[run] == 0:
-                final_portfolio_short[run] = portfolio
-
-            # transition selection
-            chosen_transition, lag = _select_transition(
-                state_id,
-                strategy,
-                states,
-                transitions_by_from,
-                settings,
-                rng,
-            )
-            if chosen_transition:
-                comp_adjust_factor = 1.0 + (chosen_transition.delta.comp_adjustment_pct or 0.0)
-                if chosen_transition.delta.relocation_cost:
-                    portfolio = max(0.0, portfolio - chosen_transition.delta.relocation_cost)
-                state_id = chosen_transition.to_state_id
-            else:
-                comp_adjust_factor = 1.0
-
-            month += step_months + (lag or 0)
-
-        npv_short[run] = _npv(cash_flows, settings.discount_rate_real, step_months, horizon_short_months)
-        npv_long[run] = _npv(cash_flows, settings.discount_rate_real, step_months, horizon_long_months)
-        final_portfolio_long[run] = portfolio
-        min_ratio[run] = min_ratio_run
-        unemployment_6[run] = longest_unemp >= 6
-        unemployment_12[run] = longest_unemp >= 12
-        unemployment_24[run] = longest_unemp >= 24
-        haircut_values.extend(haircut_list)
-
-        total_steps = max(steps, 1)
-        career_capital_scores.append((identity_sum + portability_sum) / (2 * total_steps))
-        enjoyment_scores.append(wellbeing_sum / total_steps)
-        preferred = 0
-        for loc_id, count in location_counts.items():
-            if strategy.preferred_locations and loc_id in strategy.preferred_locations:
-                preferred += count
-        location_fit_scores.append(preferred / total_steps if total_steps else 0)
-        for loc_id, count in location_counts.items():
+    for r in run_results:
+        haircut_values.extend(r.haircut_values)
+        career_capital_scores.append(r.career_capital_score)
+        enjoyment_scores.append(r.enjoyment_score)
+        location_fit_scores.append(r.location_fit_score)
+        for loc_id, count in r.location_counts.items():
             location_time_accum[loc_id] = location_time_accum.get(loc_id, 0) + count
 
     downside = _downside_metrics(
@@ -264,9 +448,9 @@ def _simulate_scenario(
     portfolio_stats_long = _portfolio_stats(final_portfolio_long)
 
     nonfinancial = {
-        "career_capital_avg": float(np.mean(career_capital_scores)),
-        "enjoyment_avg": float(np.mean(enjoyment_scores)),
-        "location_fit_avg": float(np.mean(location_fit_scores)),
+        "career_capital_avg": float(np.mean(career_capital_scores)) if career_capital_scores else 0.0,
+        "enjoyment_avg": float(np.mean(enjoyment_scores)) if enjoyment_scores else 0.0,
+        "location_fit_avg": float(np.mean(location_fit_scores)) if location_fit_scores else 0.0,
         "location_time_shares": _normalize_dict(location_time_accum),
     }
 

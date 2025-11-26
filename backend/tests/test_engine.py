@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 from backend.models.domain import (
@@ -11,7 +12,15 @@ from backend.models.domain import (
     Strategy,
     Transition,
 )
-from backend.simulation.engine import hazard_to_step, simulate_config
+from backend.simulation.engine import (
+    _best_for_horizon,
+    _downside_metrics,
+    _portfolio_stats,
+    _select_transition,
+    _utility,
+    hazard_to_step,
+    simulate_config,
+)
 
 
 def test_hazard_conversion():
@@ -19,6 +28,23 @@ def test_hazard_conversion():
     assert 0 < monthly < 1
     quarterly = hazard_to_step(0.24, 3)
     assert quarterly > monthly
+
+
+@pytest.mark.parametrize(
+    "annual,step_months,expected",
+    [
+        (-0.1, 1, 0.0),
+        (0.0, 1, 0.0),
+        (1e-9, 1, 0.0),
+        (0.999999, 1, 1.0),
+    ],
+)
+def test_hazard_edge_cases(annual, step_months, expected):
+    val = hazard_to_step(annual, step_months)
+    if expected == 0.0:
+        assert 0 <= val < 1e-6
+    else:
+        assert 0 < val < 1
 
 
 def test_simple_simulation_runs():
@@ -207,3 +233,132 @@ def test_sensitivity_and_downside_shapes():
     metrics = downside["s"]
     for key in ["p_liquid_lt_1x_col", "p_liquid_lt_2x_col", "p_unemp_ge_6m", "p_unemp_ge_12m", "p_lower_pay_reentry"]:
         assert key in metrics
+
+
+def test_best_for_horizon_picks_max_utility():
+    dummy = [
+        type("R", (), {"horizon_years": 5, "utility_score": 10}),
+        type("R", (), {"horizon_years": 5, "utility_score": 20}),
+        type("R", (), {"horizon_years": 10, "utility_score": 30}),
+    ]
+    best_5 = _best_for_horizon(dummy, 5)
+    assert best_5.utility_score == 20
+    best_10 = _best_for_horizon(dummy, 10)
+    assert best_10.utility_score == 30
+
+
+def test_utility_penalizes_variance():
+    npv = np.array([100.0, 300.0])
+    downside = {}
+    nonfin = {"career_capital_avg": 0, "enjoyment_avg": 0, "location_fit_avg": 0}
+    weights = ScoringWeights(financial=1.0, career_capital=0, enjoyment_identity=0, location_fit=0, legacy=0)
+    low_risk = _utility(npv, weights, downside, nonfin, risk_lambda=0.0)
+    high_risk = _utility(npv, weights, downside, nonfin, risk_lambda=1.0)
+    assert low_risk > high_risk
+
+
+def test_portfolio_stats_monotonic():
+    stats = _portfolio_stats(np.array([1, 2, 3, 4]))
+    assert stats["p10"] <= stats["p50"] <= stats["p90"]
+    assert stats["mean"] == pytest.approx(2.5)
+
+
+def test_downside_metrics_probabilities():
+    downside = _downside_metrics(
+        min_ratio=np.array([0.5, 1.5]),
+        unemployment_6=np.array([True, False]),
+        unemployment_12=np.array([False, False]),
+        unemployment_24=np.array([False, False]),
+        lower_pay_reentry=np.array([True, True]),
+        haircut_values=[-0.1, -0.3],
+    )
+    assert downside["p_liquid_lt_1x_col"] == 0.5
+    assert downside["p_liquid_lt_2x_col"] == 1.0
+    assert downside["p_unemp_ge_6m"] == 0.5
+    assert downside["median_pay_haircut"] == -0.2
+
+
+def test_select_transition_respects_disallowed_location():
+    loc = Location(id="home", name="Home", col_annual=60000, state_tax_rate=0.05)
+    comp = Compensation(base_annual=100000, bonus_target_annual=0, bonus_prob_pay=0.0)
+    states = {
+        "from": CareerState(
+            id="from",
+            label="From",
+            role_title="Engineer",
+            location_id="home",
+            employment_status="employed",
+            compensation=comp,
+        ),
+        "to_good": CareerState(
+            id="to_good",
+            label="Good",
+            role_title="Engineer",
+            location_id="home",
+            employment_status="employed",
+            compensation=comp,
+        ),
+        "to_bad": CareerState(
+            id="to_bad",
+            label="Bad",
+            role_title="Engineer",
+            location_id="home",
+            employment_status="employed",
+            compensation=comp,
+        ),
+    }
+    transitions = {
+        "from": [
+            Transition(id="t_good", from_state_id="from", to_state_id="to_good", type="move", base_annual_prob=0.999999),
+            Transition(id="t_bad", from_state_id="from", to_state_id="to_bad", type="move", base_annual_prob=0.999999),
+        ]
+    }
+    strat = Strategy(
+        id="s",
+        name="S",
+        description="",
+        initial_choice_state_ids=["from"],
+        disallowed_locations=[states["to_bad"].location_id],
+    )
+    rng = np.random.default_rng(0)
+    settings = SimulationSettings(time_step_months=1)
+    seen = set()
+    for _ in range(200):
+        chosen, _ = _select_transition("from", strat, states, transitions, settings, rng)
+        if chosen:
+            seen.add(chosen.id)
+    assert "t_bad" not in seen
+
+
+def test_select_transition_respects_paycut_floor():
+    comp_from = Compensation(base_annual=100000, bonus_target_annual=0, bonus_prob_pay=0.0)
+    comp_to = Compensation(base_annual=70000, bonus_target_annual=0, bonus_prob_pay=0.0)
+    states = {
+        "from": CareerState(
+            id="from",
+            label="From",
+            role_title="Engineer",
+            location_id="home",
+            employment_status="employed",
+            compensation=comp_from,
+        ),
+        "to": CareerState(
+            id="to",
+            label="To",
+            role_title="Engineer",
+            location_id="home",
+            employment_status="employed",
+            compensation=comp_to,
+        ),
+    }
+    transitions = {"from": [Transition(id="t1", from_state_id="from", to_state_id="to", type="move", base_annual_prob=1.0)]}
+    strat = Strategy(
+        id="s",
+        name="S",
+        description="",
+        initial_choice_state_ids=["from"],
+        paycut_floor_pct=-0.2,
+    )
+    rng = np.random.default_rng(0)
+    chosen, _ = _select_transition("from", strat, states, transitions, SimulationSettings(), rng)
+    assert chosen is None

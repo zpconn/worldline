@@ -1,15 +1,26 @@
 # Python
 backend/.venv/
 __pycache__/
+.pytest_cache/
+.coverage
 
 # Node
 frontend/node_modules/
+frontend/dist/
+frontend/.vite/
 
 # OS / editor
 .DS_Store
 Thumbs.db
+.idea/
+.vscode/
 
 # Logs
 npm-debug.log*
 yarn-error.log*
 /package-lock.json
+
+# Builds
+dist/
+build/
+*.log

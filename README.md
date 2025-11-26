@@ -123,3 +123,22 @@ The frontend ships a starter config and auto-posts it to the backend. You can al
 - Risk modeling: monthly returns derived from annual mean/std; NPV discounted using real rate; risk-adjusted score = EV − λ·Var with CVaR reporting.
 - Downside metrics: liquidity vs COL, unemployment spell probabilities (6/12/24m), lower-pay re-entry probability, median haircut.
 - Sensitivity: perturb portfolio returns/volatility and transition hazards to populate tornado data.
+
+## Instructions recap
+- Backend: `cd backend && python -m venv .venv && .\.venv\Scripts\activate && pip install -r requirements.txt && uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload`
+- Frontend: `cd frontend && npm install && npm run dev` (after backend is up on 8000).
+- Run tests: `cd backend && python -m pytest backend/tests`
+
+## Glossary
+- DAG (Directed Acyclic Graph): career model of states (nodes) and transitions (edges) with no backward time moves.
+- Strategy: policy that filters/weights transitions and defines starting choices.
+- Scenario: a specific (strategy × initial_state) pair evaluated over a horizon.
+- Utility: combined score using EV minus risk penalty plus weighted non-financial scores.
+- EV (Expected Value): mean of simulated NPVs (net present value of cash flows/portfolio).
+- CVaR (Conditional Value at Risk): average of the worst α fraction of outcomes (downside tail).
+- Risk penalty λ: weight applied to variance in the financial score (higher λ = more risk-averse).
+- cvar α: percentile of worst outcomes used for CVaR (e.g., 0.10 = worst 10%).
+- COL: cost of living for a location (after-tax annual baseline).
+- Paycut floor: minimum allowed compensation change vs current when considering transitions.
+- Downside liquidity (LIO shorthand): checks like P(liquid < 1x or 2x COL) during the path.
+- Tornado sensitivity: ± perturbations of key parameters to see utility swings (plotted as horizontal bars).

@@ -8,6 +8,7 @@ import {
   Tooltip,
   XAxis,
   YAxis,
+  ReferenceLine,
 } from "recharts";
 
 type Props = {
@@ -27,6 +28,12 @@ const SimulationResults: React.FC<Props> = ({ result }) => {
     CVaR: s.cvar_npv,
     Utility: s.utility_score,
   }));
+  const leftVals = barData.flatMap((d) => [d.EV || 0, d.CVaR || 0]);
+  const rightVals = barData.map((d) => d.Utility || 0);
+  const leftDomain = paddedDomain(leftVals);
+  const rightDomain = paddedDomain(rightVals);
+  const leftTicks = buildTicks(leftDomain);
+  const rightTicks = buildTicks(rightDomain);
 
   const tornado = (result.sensitivity?.parameters || []).map((p: any) => ({
     name: p.parameter,
@@ -42,16 +49,30 @@ const SimulationResults: React.FC<Props> = ({ result }) => {
           <SummaryCard title="Best 5Y" scenario={result.best_5y} />
           <SummaryCard title="Best 10Y" scenario={result.best_10y} />
         </div>
-        <h3 style={subhead}>Utility / EV (10y)</h3>
-        <div style={{ height: 260, background: "#0f172a", borderRadius: 10, border: "1px solid #1f2937", padding: 8 }}>
+        <h3 style={subhead}>Utility (10y)</h3>
+        <div style={{ height: 220, background: "#0f172a", borderRadius: 10, border: "1px solid #1f2937", padding: 8 }}>
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={barData} margin={{ top: 16, right: 8, bottom: 16, left: 8 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
               <XAxis dataKey="name" hide />
-              <YAxis />
-              <Tooltip />
+              <YAxis domain={rightDomain} ticks={rightTicks} tickFormatter={formatCompact} tick={{ fill: "#94a3b8" }} />
+              <ReferenceLine y={0} stroke="#475569" strokeDasharray="4 4" />
+              <Tooltip formatter={(value) => formatCompact(value as number)} />
               <Legend />
               <Bar dataKey="Utility" fill="#38bdf8" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        <h3 style={subhead}>EV / CVaR (10y)</h3>
+        <div style={{ height: 220, background: "#0f172a", borderRadius: 10, border: "1px solid #1f2937", padding: 8 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={barData} margin={{ top: 16, right: 8, bottom: 16, left: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+              <XAxis dataKey="name" hide />
+              <YAxis domain={leftDomain} ticks={leftTicks} tickFormatter={formatCompact} tick={{ fill: "#94a3b8" }} />
+              <ReferenceLine y={0} stroke="#475569" strokeDasharray="4 4" />
+              <Tooltip formatter={(value) => formatCompact(value as number)} />
+              <Legend />
               <Bar dataKey="EV" fill="#a855f7" />
               <Bar dataKey="CVaR" fill="#f97316" />
             </BarChart>
@@ -141,6 +162,56 @@ const ScenarioList: React.FC<{ scenarios: any[] }> = ({ scenarios }) => {
 };
 
 const pct = (v: number) => `${Math.round((v || 0) * 100)}%`;
+const formatCompact = (n: number) => {
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}b`;
+  if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}m`;
+  if (abs >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return n.toFixed(0);
+};
+
+const paddedDomain = (vals: number[], padRatio = 0.08): [number, number] => {
+  if (!vals.length) return [0, 1];
+  const min = Math.min(...vals, 0);
+  const max = Math.max(...vals, 0);
+  const span = max - min;
+  const pad = span === 0 ? Math.max(Math.abs(max || 1) * padRatio, 1) : span * padRatio;
+  return [min - pad, max + pad];
+};
+
+const buildTicks = ([min, max]: [number, number], target = 6): number[] => {
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return [0];
+  if (min === max) {
+    const base = min || 1;
+    return [base - 1, 0, base + 1].sort((a, b) => a - b);
+  }
+  const span = max - min;
+  const rawStep = span / Math.max(1, target - 1);
+  const step = niceStep(rawStep);
+  let start = Math.floor(min / step) * step;
+  let end = Math.ceil(max / step) * step;
+  start = Math.min(start, 0);
+  end = Math.max(end, 0);
+  const ticks: number[] = [];
+  for (let v = start; v <= end + 1e-9; v += step) {
+    ticks.push(Number(v.toFixed(10)));
+    if (ticks.length > 50) break; // safety cap
+  }
+  if (!ticks.includes(0)) ticks.push(0);
+  ticks.sort((a, b) => a - b);
+  return ticks;
+};
+
+const niceStep = (raw: number): number => {
+  const exp = Math.floor(Math.log10(Math.max(raw, 1e-12)));
+  const f = raw / Math.pow(10, exp);
+  let nf: number;
+  if (f < 1.5) nf = 1;
+  else if (f < 3) nf = 2;
+  else if (f < 7) nf = 5;
+  else nf = 10;
+  return nf * Math.pow(10, exp);
+};
 
 const subhead: React.CSSProperties = { marginBottom: 6, marginTop: 16 };
 const pillRow: React.CSSProperties = { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 };

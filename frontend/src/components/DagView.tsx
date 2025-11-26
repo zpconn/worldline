@@ -1,9 +1,10 @@
 import React, { useMemo } from "react";
 import ReactFlow, { Background, Controls, MiniMap } from "reactflow";
 import "reactflow/dist/style.css";
+import { ConfigPayload } from "../types";
 
 type Props = {
-  config: any;
+  config: ConfigPayload | null;
 };
 
 const DagView: React.FC<Props> = ({ config }) => {

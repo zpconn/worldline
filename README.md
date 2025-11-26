@@ -1,6 +1,6 @@
-# Career-as-DAG Monte Carlo
+# Worldline
 
-Full-stack reference app for modeling a career as a directed acyclic graph, applying strategies, and running Monte Carlo simulations to evaluate 5-year and 10-year outcomes.
+Worldline is a full-stack reference app for modeling a career as a directed acyclic graph, applying strategies, and running Monte Carlo simulations to evaluate 5-year and 10-year outcomes.
 
 ## Project layout
 

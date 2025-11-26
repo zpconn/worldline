@@ -33,7 +33,7 @@ class ConfigStore:
 
 
 store = ConfigStore()
-app = FastAPI(title="Career DAG Simulator", version="0.1.0")
+app = FastAPI(title="Worldline", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,

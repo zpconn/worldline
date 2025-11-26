@@ -236,8 +236,8 @@ function App() {
     <div style={{ fontFamily: "Space Grotesk, 'Segoe UI', sans-serif", background: "linear-gradient(135deg,#0f172a,#1e293b)", minHeight: "100vh", color: "#e2e8f0" }}>
       <header style={{ padding: "20px 32px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div>
-          <h1 style={{ margin: 0, fontSize: 28 }}>Career-as-DAG Monte Carlo</h1>
-          <p style={{ margin: 0, opacity: 0.7 }}>Model transitions, run Monte Carlo, and compare strategies.</p>
+          <h1 style={{ margin: 0, fontSize: 28 }}>Worldline</h1>
+          <p style={{ margin: 0, opacity: 0.7 }}>Model your path as a DAG, run Monte Carlo, and compare strategies.</p>
         </div>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "flex-end" }}>
           <button onClick={() => setConfig(sampleConfig)} style={secondaryButtonStyle}>Reset sample</button>
@@ -270,7 +270,7 @@ function App() {
           </div>
         </section>
         <section style={{ ...cardStyle, gridColumn: "1 / span 2" }}>
-          <h2 style={sectionTitle}>Career DAG</h2>
+          <h2 style={sectionTitle}>Worldline DAG</h2>
           <DagView config={config} />
         </section>
         <section style={{ ...cardStyle, gridColumn: "1 / span 2" }}>

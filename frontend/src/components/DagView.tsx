@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import ReactFlow, { Background, Controls, MiniMap } from "reactflow";
+import ReactFlow, { Background, Controls, MiniMap, MarkerType, Edge } from "reactflow";
 import "reactflow/dist/style.css";
 import { ConfigPayload } from "../types";
 
@@ -22,14 +22,14 @@ const DagView: React.FC<Props> = ({ config }) => {
         padding: 8,
       },
     }));
-    const edges = (config.transitions || []).map((t: any) => ({
+    const edges: Edge[] = (config.transitions || []).map((t: any) => ({
       id: t.id,
       source: t.from_state_id,
       target: t.to_state_id,
       label: t.type,
       animated: true,
       style: { stroke: "#c084fc" },
-      markerEnd: { type: "arrowclosed" },
+      markerEnd: { type: MarkerType.ArrowClosed },
     }));
     return { nodes, edges };
   }, [config]);

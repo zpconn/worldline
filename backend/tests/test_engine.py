@@ -7,6 +7,7 @@ from backend.models.domain import (
     ConfigPayload,
     Location,
     PortfolioSettings,
+    ScenarioResult,
     ScoringWeights,
     SimulationSettings,
     Strategy,
@@ -14,7 +15,9 @@ from backend.models.domain import (
 )
 from backend.simulation.engine import (
     _best_for_horizon,
+    _aggregate_downside,
     _downside_metrics,
+    _normalize_dict,
     _portfolio_stats,
     _select_transition,
     _utility,
@@ -328,6 +331,140 @@ def test_select_transition_respects_disallowed_location():
         if chosen:
             seen.add(chosen.id)
     assert "t_bad" not in seen
+
+
+def test_select_transition_allows_stay_when_probs_low():
+    comp = Compensation(base_annual=100000, bonus_target_annual=0, bonus_prob_pay=0.0)
+    states = {
+        "from": CareerState(
+            id="from",
+            label="From",
+            role_title="Engineer",
+            location_id="home",
+            employment_status="employed",
+            compensation=comp,
+        ),
+        "to": CareerState(
+            id="to",
+            label="To",
+            role_title="Engineer",
+            location_id="home",
+            employment_status="employed",
+            compensation=comp,
+        ),
+    }
+    transitions = {"from": [Transition(id="t1", from_state_id="from", to_state_id="to", type="move", base_annual_prob=1e-5)]}
+    strat = Strategy(id="s", name="S", description="", initial_choice_state_ids=["from"])
+    rng = np.random.default_rng(1)
+    settings = SimulationSettings(time_step_months=1)
+    stay_count = 0
+    move_count = 0
+    for _ in range(500):
+        chosen, _ = _select_transition("from", strat, states, transitions, settings, rng)
+        if chosen is None:
+            stay_count += 1
+        else:
+            move_count += 1
+    assert stay_count == 500
+    assert move_count == 0
+
+
+def test_hazard_monotonic_in_step():
+    annual = 0.3
+    monthly = hazard_to_step(annual, 1)
+    quarterly = hazard_to_step(annual, 3)
+    annualized = hazard_to_step(annual, 12)
+    assert monthly < quarterly < annualized
+
+
+def test_aggregate_downside_averages():
+    res = [
+        ScenarioResult(
+            strategy_id="s",
+            initial_state_id="a",
+            label="",
+            horizon_years=5,
+            ev_npv=0,
+            var_npv=0,
+            cvar_npv=0,
+            utility_score=0,
+            portfolio_stats={},
+            downside={"p_liquid_lt_1x_col": 0.2},
+            nonfinancial={},
+        ),
+        ScenarioResult(
+            strategy_id="s",
+            initial_state_id="b",
+            label="",
+            horizon_years=5,
+            ev_npv=0,
+            var_npv=0,
+            cvar_npv=0,
+            utility_score=0,
+            portfolio_stats={},
+            downside={"p_liquid_lt_1x_col": 0.4},
+            nonfinancial={},
+        ),
+    ]
+    agg = _aggregate_downside(res)
+    assert agg["by_strategy"]["s"]["p_liquid_lt_1x_col"] == pytest.approx(0.3)
+
+
+def test_normalize_dict_handles_zero_total():
+    assert _normalize_dict({"a": 0.0, "b": 0.0}) == {"a": 0.0, "b": 0.0}
+    normalized = _normalize_dict({"a": 1.0, "b": 1.0})
+    assert normalized["a"] == pytest.approx(0.5)
+    assert normalized["b"] == pytest.approx(0.5)
+
+
+def test_scenario_count_matches_strategies_and_initial_states():
+    loc, comp, portfolio, settings = _base_components()
+    states = [
+        CareerState(id="a", label="A", role_title="Engineer", location_id=loc.id, employment_status="employed", compensation=comp),
+        CareerState(id="b", label="B", role_title="Engineer", location_id=loc.id, employment_status="employed", compensation=comp),
+    ]
+    strategies = [
+        Strategy(id="s1", name="S1", description="", initial_choice_state_ids=["a"]),
+        Strategy(id="s2", name="S2", description="", initial_choice_state_ids=["b"]),
+    ]
+    cfg = ConfigPayload(
+        locations=[loc],
+        portfolio_settings=portfolio,
+        career_states=states,
+        transitions=[],
+        strategies=strategies,
+        scoring_weights=ScoringWeights(),
+        simulation_settings=settings,
+    )
+    res = simulate_config(cfg)
+    # each strategy * initial state pair yields 5y + 10y scenario
+    assert len(res.all_scenarios) == 4
+
+
+def test_sensitivity_returns_empty_when_no_results():
+    cfg = ConfigPayload(
+        locations=[],
+        portfolio_settings=PortfolioSettings(initial_liquid=0, mean_annual_return=0, std_annual_return=0),
+        career_states=[],
+        transitions=[],
+        strategies=[],
+        scoring_weights=ScoringWeights(),
+        simulation_settings=SimulationSettings(),
+    )
+    res = simulate_config(cfg, override_settings=SimulationSettings(num_runs_per_scenario=1))
+    assert res.sensitivity == {}
+
+
+def test_downside_metrics_empty_haircuts():
+    downside = _downside_metrics(
+        min_ratio=np.array([2.0, 3.0]),
+        unemployment_6=np.array([False, False]),
+        unemployment_12=np.array([False, False]),
+        unemployment_24=np.array([False, False]),
+        lower_pay_reentry=np.array([False, False]),
+        haircut_values=[],
+    )
+    assert downside["median_pay_haircut"] == 0.0
 
 
 def test_select_transition_respects_paycut_floor():

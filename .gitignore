@@ -1,0 +1,15 @@
+# Python
+backend/.venv/
+__pycache__/
+
+# Node
+frontend/node_modules/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+
+# Logs
+npm-debug.log*
+yarn-error.log*
+/package-lock.json

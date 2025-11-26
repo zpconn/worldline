@@ -1,0 +1,157 @@
+import React from "react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+
+type Props = {
+  result: any;
+};
+
+const SimulationResults: React.FC<Props> = ({ result }) => {
+  if (!result) {
+    return <div style={{ opacity: 0.6 }}>Run simulations to see metrics.</div>;
+  }
+
+  const scenarios10 = (result.all_scenarios || []).filter((s: any) => s.horizon_years === 10);
+  const scenarios5 = (result.all_scenarios || []).filter((s: any) => s.horizon_years === 5);
+  const barData = scenarios10.map((s: any) => ({
+    name: s.label,
+    EV: s.ev_npv,
+    CVaR: s.cvar_npv,
+    Utility: s.utility_score,
+  }));
+
+  const tornado = (result.sensitivity?.parameters || []).map((p: any) => ({
+    name: p.parameter,
+    low: p.low_utility,
+    base: p.base_utility,
+    high: p.high_utility,
+  }));
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 16 }}>
+      <div>
+        <div style={pillRow}>
+          <SummaryCard title="Best 5Y" scenario={result.best_5y} />
+          <SummaryCard title="Best 10Y" scenario={result.best_10y} />
+        </div>
+        <h3 style={subhead}>Utility / EV (10y)</h3>
+        <div style={{ height: 260, background: "#0f172a", borderRadius: 10, border: "1px solid #1f2937", padding: 8 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={barData} margin={{ top: 16, right: 8, bottom: 16, left: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+              <XAxis dataKey="name" hide />
+              <YAxis />
+              <Tooltip />
+              <Legend />
+              <Bar dataKey="Utility" fill="#38bdf8" />
+              <Bar dataKey="EV" fill="#a855f7" />
+              <Bar dataKey="CVaR" fill="#f97316" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        <h3 style={subhead}>Downside Dashboard (by strategy)</h3>
+        <DownsideTable data={result.downside_dashboard?.by_strategy || {}} />
+      </div>
+      <div>
+        <h3 style={subhead}>Sensitivity (tornado)</h3>
+        <div style={{ height: 220, background: "#0f172a", borderRadius: 10, border: "1px solid #1f2937", padding: 8 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={tornado} layout="vertical" margin={{ left: 60 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+              <YAxis dataKey="name" type="category" />
+              <XAxis type="number" />
+              <Tooltip />
+              <Legend />
+              <Bar dataKey="low" stackId="a" fill="#f97316" />
+              <Bar dataKey="base" stackId="a" fill="#38bdf8" />
+              <Bar dataKey="high" stackId="a" fill="#22c55e" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        <h3 style={subhead}>All Scenarios (5y)</h3>
+        <ScenarioList scenarios={scenarios5} />
+      </div>
+    </div>
+  );
+};
+
+const SummaryCard: React.FC<{ title: string; scenario: any }> = ({ title, scenario }) => {
+  if (!scenario) return <div style={summaryCard}>No data</div>;
+  return (
+    <div style={summaryCard}>
+      <p style={{ margin: 0, opacity: 0.7 }}>{title}</p>
+      <h4 style={{ margin: "4px 0", fontSize: 18 }}>{scenario.label}</h4>
+      <p style={{ margin: 0 }}>Utility {scenario.utility_score.toFixed(2)}</p>
+      <p style={{ margin: 0, opacity: 0.7 }}>EV NPV {scenario.ev_npv.toFixed(0)}</p>
+      <p style={{ margin: 0, opacity: 0.7 }}>CVaR {scenario.cvar_npv.toFixed(0)}</p>
+    </div>
+  );
+};
+
+const DownsideTable: React.FC<{ data: Record<string, any> }> = ({ data }) => {
+  const entries = Object.entries(data);
+  if (!entries.length) return <div style={{ opacity: 0.6 }}>No downside metrics yet.</div>;
+  return (
+    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+      <thead>
+        <tr>
+          <th style={th}>Strategy</th>
+          <th style={th}>P(liquid&lt;1x)</th>
+          <th style={th}>P(liquid&lt;2x)</th>
+          <th style={th}>Unemp ≥6m</th>
+          <th style={th}>Unemp ≥12m</th>
+          <th style={th}>Lower pay reentry</th>
+        </tr>
+      </thead>
+      <tbody>
+        {entries.map(([sid, metrics]) => (
+          <tr key={sid}>
+            <td style={td}>{sid}</td>
+            <td style={td}>{pct(metrics.p_liquid_lt_1x_col)}</td>
+            <td style={td}>{pct(metrics.p_liquid_lt_2x_col)}</td>
+            <td style={td}>{pct(metrics.p_unemp_ge_6m)}</td>
+            <td style={td}>{pct(metrics.p_unemp_ge_12m)}</td>
+            <td style={td}>{pct(metrics.p_lower_pay_reentry)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+};
+
+const ScenarioList: React.FC<{ scenarios: any[] }> = ({ scenarios }) => {
+  return (
+    <div style={{ background: "#0f172a", borderRadius: 10, border: "1px solid #1f2937", maxHeight: 250, overflow: "auto" }}>
+      {scenarios.map((s) => (
+        <div key={`${s.strategy_id}-${s.initial_state_id}`} style={{ padding: 10, borderBottom: "1px solid #1f2937" }}>
+          <div style={{ fontWeight: 700 }}>{s.label}</div>
+          <div style={{ fontSize: 12, opacity: 0.8 }}>Utility {s.utility_score.toFixed(2)} | EV {s.ev_npv.toFixed(0)} | CVaR {s.cvar_npv.toFixed(0)}</div>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+const pct = (v: number) => `${Math.round((v || 0) * 100)}%`;
+
+const subhead: React.CSSProperties = { marginBottom: 6, marginTop: 16 };
+const pillRow: React.CSSProperties = { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 };
+const summaryCard: React.CSSProperties = {
+  background: "#0f172a",
+  border: "1px solid #1f2937",
+  borderRadius: 10,
+  padding: 10,
+  minHeight: 110,
+};
+const th: React.CSSProperties = { textAlign: "left", padding: "6px 4px", borderBottom: "1px solid #1f2937" };
+const td: React.CSSProperties = { padding: "6px 4px", borderBottom: "1px solid #1f2937" };
+
+export default SimulationResults;

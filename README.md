@@ -1,0 +1,125 @@
+# Career-as-DAG Monte Carlo
+
+Full-stack reference app for modeling a career as a directed acyclic graph, applying strategies, and running Monte Carlo simulations to evaluate 5-year and 10-year outcomes.
+
+## Project layout
+
+- `backend/`: FastAPI + Python 3.11. Pydantic models, simulation engine, and API endpoints.
+- `frontend/`: React + TypeScript (Vite). Configuration editor, DAG visualization, charts, and export.
+
+## Quickstart
+
+### Backend
+
+```bash
+cd backend
+python -m venv .venv
+.venv\Scripts\activate  # Windows
+pip install -r requirements.txt
+uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Endpoints:
+- `GET /health` – sanity check.
+- `POST /config` – save configuration payload.
+- `GET /config` – fetch current configuration.
+- `POST /simulate` – run simulations (optionally override `SimulationSettings`).
+- `GET /export` – export last simulation result as structured JSON.
+
+Run tests:
+
+```bash
+python -m pytest backend/tests
+```
+
+### Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open http://localhost:5173 and ensure the backend is running on http://localhost:8000 (CORS enabled by default).
+
+## Concepts
+
+- **Career states (nodes):** roles/contexts with comp, location, wellbeing, and identity brand.
+- **Transitions (edges):** moves between states with hazards, lags, and deltas (relocation costs, pay adjustments).
+- **Strategies:** policies that filter/shape transitions (paycut floors, preferred/disallowed locations, initial choices).
+- **Simulation settings:** time step (monthly/quarterly), horizons (5/10y), risk aversion, CVaR level, run count, discount rate.
+- **Portfolio model:** liquid wealth with stochastic returns plus net cash flow from compensation minus COL/taxes, contributions, and vesting.
+- **Outcomes:** EV/variance/CVaR of NPV, downside probabilities (unemployment spells, liquidity vs COL), non-financial scores, and overall utility using configurable weights.
+
+## Example configuration
+
+The frontend ships a starter config and auto-posts it to the backend. You can also POST a payload like:
+
+```json
+{
+  "locations": [
+    { "id": "home", "name": "Home City", "col_annual": 60000, "state_tax_rate": 0.05 },
+    { "id": "hub", "name": "Tech Hub", "col_annual": 90000, "state_tax_rate": 0.1 }
+  ],
+  "portfolio_settings": {
+    "initial_liquid": 250000,
+    "mean_annual_return": 0.06,
+    "std_annual_return": 0.12,
+    "contribution_rate": 0.1
+  },
+  "career_states": [
+    {
+      "id": "current",
+      "label": "Current Role",
+      "role_title": "Engineering Manager",
+      "location_id": "home",
+      "employment_status": "employed",
+      "compensation": { "base_annual": 200000, "bonus_target_annual": 50000, "bonus_prob_pay": 0.7, "equity": [], "one_times": [] }
+    },
+    {
+      "id": "promotion",
+      "label": "Director",
+      "role_title": "Director of Engineering",
+      "location_id": "home",
+      "employment_status": "employed",
+      "compensation": { "base_annual": 260000, "bonus_target_annual": 70000, "bonus_prob_pay": 0.7, "equity": [], "one_times": [] }
+    },
+    {
+      "id": "startup",
+      "label": "Startup CTO",
+      "role_title": "CTO",
+      "location_id": "hub",
+      "employment_status": "employed",
+      "compensation": { "base_annual": 180000, "bonus_target_annual": 30000, "bonus_prob_pay": 0.4, "equity": [{ "type": "RSU", "grant_value": 200000, "vest_years": 4, "cliff_months": 12 }], "one_times": [] }
+    },
+    { "id": "unemployed", "label": "Unemployment", "role_title": "Unemployed", "location_id": "home", "employment_status": "unemployed", "compensation": null }
+  ],
+  "transitions": [
+    { "id": "t1", "from_state_id": "current", "to_state_id": "promotion", "type": "promotion", "base_annual_prob": 0.25 },
+    { "id": "t2", "from_state_id": "current", "to_state_id": "startup", "type": "external_switch", "base_annual_prob": 0.12, "lag_months": 1, "delta": { "relocation_cost": 15000 } },
+    { "id": "t3", "from_state_id": "current", "to_state_id": "unemployed", "type": "layoff", "base_annual_prob": 0.05 },
+    { "id": "t4", "from_state_id": "promotion", "to_state_id": "unemployed", "type": "layoff", "base_annual_prob": 0.04 },
+    { "id": "t5", "from_state_id": "startup", "to_state_id": "unemployed", "type": "startup_failure", "base_annual_prob": 0.18 },
+    { "id": "t6", "from_state_id": "unemployed", "to_state_id": "current", "type": "reentry", "base_annual_prob": 0.35 }
+  ],
+  "strategies": [
+    { "id": "stability", "name": "Stability", "description": "Keep current role and optimize promotion odds", "initial_choice_state_ids": ["current"], "preferred_locations": ["home"], "disallowed_locations": [], "paycut_floor_pct": -0.2, "rules": [] },
+    { "id": "upswing", "name": "Upswing", "description": "Bias toward startup growth moves", "initial_choice_state_ids": ["current"], "preferred_locations": ["hub"], "disallowed_locations": [], "paycut_floor_pct": -0.35, "rules": [] }
+  ],
+  "simulation_settings": { "time_step_months": 1, "horizon_years_short": 5, "horizon_years_long": 10, "discount_rate_real": 0.02, "risk_penalty_lambda": 0.5, "cvar_alpha": 0.1, "num_runs_per_scenario": 500, "random_seed": 7 }
+}
+```
+
+## Frontend UX map
+
+- **Configuration:** JSON editor (ready for swapping in a form-driven editor), per-section tabs can be added incrementally.
+- **DAG view:** React Flow visualizes nodes/edges, color-coded by employment status.
+- **Simulation:** Trigger `/simulate`, then view best 5y/10y summaries, bar charts for utility/EV/CVaR, downside dashboard, sensitivity (tornado), and scenario list. Export downloads the last `/export` payload.
+
+## Notes and guardrails
+
+- Graph must remain a DAG; backend validates against cycles.
+- Strategies filter transitions (disallowed locations, paycut floors) and shape eligibility.
+- Risk modeling: monthly returns derived from annual mean/std; NPV discounted using real rate; risk-adjusted score = EV − λ·Var with CVaR reporting.
+- Downside metrics: liquidity vs COL, unemployment spell probabilities (6/12/24m), lower-pay re-entry probability, median haircut.
+- Sensitivity: perturb portfolio returns/volatility and transition hazards to populate tornado data.

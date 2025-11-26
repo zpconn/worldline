@@ -35,12 +35,22 @@ const SimulationResults: React.FC<Props> = ({ result }) => {
   const leftTicks = buildTicks(leftDomain);
   const rightTicks = buildTicks(rightDomain);
 
-  const tornado = (result.sensitivity?.parameters || []).map((p: any) => ({
-    name: p.parameter,
-    low: p.low_utility,
-    base: p.base_utility,
-    high: p.high_utility,
-  }));
+  const tornado = (result.sensitivity?.parameters || [])
+    .map((p: any) => {
+      const base = p.base_utility ?? 0;
+      const low = p.low_utility ?? 0;
+      const high = p.high_utility ?? 0;
+      return {
+        name: p.parameter,
+        low,
+        base,
+        high,
+        lowDelta: low - base,
+        highDelta: high - base,
+      };
+    })
+    .sort((a: any, b: any) => Math.max(Math.abs(b.lowDelta), Math.abs(b.highDelta)) - Math.max(Math.abs(a.lowDelta), Math.abs(a.highDelta)));
+  const tornadoDomain = paddedSymmetricDomain(tornado.flatMap((d: any) => [d.lowDelta, d.highDelta]));
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 16 }}>
@@ -85,15 +95,15 @@ const SimulationResults: React.FC<Props> = ({ result }) => {
         <h3 style={subhead}>Sensitivity (tornado)</h3>
         <div style={{ height: 220, background: "#0f172a", borderRadius: 10, border: "1px solid #1f2937", padding: 8 }}>
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={tornado} layout="vertical" margin={{ left: 60 }}>
+            <BarChart data={tornado} layout="vertical" margin={{ left: 80 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-              <YAxis dataKey="name" type="category" />
-              <XAxis type="number" />
-              <Tooltip />
+              <YAxis dataKey="name" type="category" width={70} />
+              <XAxis type="number" domain={tornadoDomain} tickFormatter={formatOneDecimal} />
+              <ReferenceLine x={0} stroke="#475569" strokeDasharray="4 4" />
+              <Tooltip content={TornadoTooltip} />
               <Legend />
-              <Bar dataKey="low" stackId="a" fill="#f97316" />
-              <Bar dataKey="base" stackId="a" fill="#38bdf8" />
-              <Bar dataKey="high" stackId="a" fill="#22c55e" />
+              <Bar dataKey="lowDelta" name="Low vs base" fill="#f97316" />
+              <Bar dataKey="highDelta" name="High vs base" fill="#22c55e" />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -169,6 +179,9 @@ const formatCompact = (n: number) => {
   if (abs >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return n.toFixed(0);
 };
+const formatOneDecimal = (n: number) => n.toFixed(1);
+const formatTwoDecimal = (n: number) => n.toFixed(2);
+const formatDelta = (n: number) => `${n >= 0 ? "+" : ""}${formatTwoDecimal(n)}`;
 
 const paddedDomain = (vals: number[], padRatio = 0.08): [number, number] => {
   if (!vals.length) return [0, 1];
@@ -177,6 +190,13 @@ const paddedDomain = (vals: number[], padRatio = 0.08): [number, number] => {
   const span = max - min;
   const pad = span === 0 ? Math.max(Math.abs(max || 1) * padRatio, 1) : span * padRatio;
   return [min - pad, max + pad];
+};
+
+const paddedSymmetricDomain = (vals: number[], padRatio = 0.08): [number, number] => {
+  const maxAbs = Math.max(...vals.map((v) => Math.abs(v)), 0);
+  const pad = maxAbs === 0 ? 1 : maxAbs * padRatio;
+  const bound = maxAbs + pad;
+  return [-bound, bound];
 };
 
 const buildTicks = ([min, max]: [number, number], target = 6): number[] => {
@@ -211,6 +231,23 @@ const niceStep = (raw: number): number => {
   else if (f < 7) nf = 5;
   else nf = 10;
   return nf * Math.pow(10, exp);
+};
+
+const TornadoTooltip = ({ active, payload, label }: any) => {
+  if (!active || !payload || !payload.length) return null;
+  const row = payload[0].payload;
+  return (
+    <div style={{ background: "#0b1220", border: "1px solid #1f2937", borderRadius: 8, padding: 8 }}>
+      <div style={{ fontWeight: 700, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 12, opacity: 0.8 }}>Base utility: {formatTwoDecimal(row.base)}</div>
+      <div style={{ fontSize: 12, color: "#f97316" }}>
+        Low: {formatTwoDecimal(row.low)} ({formatDelta(row.lowDelta)})
+      </div>
+      <div style={{ fontSize: 12, color: "#22c55e" }}>
+        High: {formatTwoDecimal(row.high)} ({formatDelta(row.highDelta)})
+      </div>
+    </div>
+  );
 };
 
 const subhead: React.CSSProperties = { marginBottom: 6, marginTop: 16 };

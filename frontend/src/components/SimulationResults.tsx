@@ -16,6 +16,13 @@ type Props = {
   simulating?: boolean;
 };
 
+type BarDatum = {
+  name: string;
+  EV: number;
+  CVaR: number;
+  Utility: number;
+};
+
 const SimulationResults: React.FC<Props> = ({ result, simulating = false }) => {
   const showProgress = simulating;
 
@@ -30,14 +37,14 @@ const SimulationResults: React.FC<Props> = ({ result, simulating = false }) => {
 
   const scenarios10 = (result.all_scenarios || []).filter((s: any) => s.horizon_years === 10);
   const scenarios5 = (result.all_scenarios || []).filter((s: any) => s.horizon_years === 5);
-  const barData = scenarios10.map((s: any) => ({
+  const barData: BarDatum[] = scenarios10.map((s: any) => ({
     name: s.label,
     EV: s.ev_npv,
     CVaR: s.cvar_npv,
     Utility: s.utility_score,
   }));
-  const leftVals = barData.flatMap((d) => [d.EV || 0, d.CVaR || 0]);
-  const rightVals = barData.map((d) => d.Utility || 0);
+  const leftVals = barData.flatMap((d: BarDatum) => [d.EV || 0, d.CVaR || 0]);
+  const rightVals = barData.map((d: BarDatum) => d.Utility || 0);
   const leftDomain = paddedDomain(leftVals);
   const rightDomain = paddedDomain(rightVals);
   const leftTicks = buildTicks(leftDomain);

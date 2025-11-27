@@ -1,3 +1,4 @@
+// React Flow DAG visualization of career states and transitions.
 import React, { useMemo } from "react";
 import ReactFlow, { Background, Controls, MiniMap, MarkerType, Edge } from "reactflow";
 import "reactflow/dist/style.css";
@@ -7,7 +8,19 @@ type Props = {
   config: ConfigPayload | null;
 };
 
+/**
+ * DagView visualizes the career graph using React Flow. It converts the structured config into node
+ * and edge objects on the fly so edits in the builder immediately reshape the diagram. The component
+ * deliberately stays presentation-only: it does no editing or validation, focusing solely on taking
+ * the domain model and expressing it as a legible DAG with minimal styling.
+ */
 const DagView: React.FC<Props> = ({ config }) => {
+  /**
+   * Build the graph model for React Flow. Nodes are laid out in a simple grid to avoid overlap
+   * without running a heavy layout engine; edge styling communicates transition type and direction.
+   * Because the config can change frequently, the computation is memoized on the full config object
+   * to avoid rehydrating React Flow state on unrelated renders.
+   */
   const { nodes, edges } = useMemo(() => {
     if (!config) return { nodes: [], edges: [] };
     const nodes = (config.career_states || []).map((s: any, idx: number) => ({
@@ -34,6 +47,11 @@ const DagView: React.FC<Props> = ({ config }) => {
     return { nodes, edges };
   }, [config]);
 
+  /**
+   * Compute the container height based on the lowest node so the flow viewport never clips the
+   * diagram. The calculation deliberately pads the bottom so the last row has breathing room and
+   * ensures a sensible minimum height when no nodes exist, preserving layout stability for the page.
+   */
   const containerHeight = useMemo(() => {
     if (nodes.length === 0) return 420;
     const maxY = Math.max(...nodes.map((n) => n.position.y));

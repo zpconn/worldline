@@ -1,3 +1,4 @@
+// Vite config enabling React plugin and setting dev server port.
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 

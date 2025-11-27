@@ -1,5 +1,15 @@
 from __future__ import annotations
 
+"""
+Core Monte Carlo simulation engine for Worldline.
+
+The engine treats a career as a DAG of states (roles/locations) and transitions
+with hazards, runs many randomized paths per strategy/start combo, and returns
+portfolio/NPV stats plus downside and non-financial metrics. It can execute
+serially or with process/thread pools while keeping runs reproducible via
+SeedSequence-driven RNGs.
+"""
+
 import copy
 import math
 import os
@@ -25,7 +35,14 @@ from backend.models.domain import (
 
 
 def hazard_to_step(annual_hazard: float, step_months: int) -> float:
-    """Convert an annual hazard/probability to per-step probability."""
+    """Convert an annual hazard into a per-step probability via Poisson math.
+
+    The simulation draws monthly (or multi-month) transitions, so annual hazards
+    are first converted to a continuous-time rate (lambda) and then scaled by
+    the step duration before applying the exponential survival transform. This
+    keeps transition probabilities consistent regardless of step length and
+    guards against invalid inputs by clamping at sensible bounds.
+    """
     annual_hazard = max(0.0, annual_hazard)
     lam = -math.log(max(1e-12, 1 - min(0.999999, annual_hazard)))
     step_rate = lam * (step_months / 12.0)
@@ -33,7 +50,14 @@ def hazard_to_step(annual_hazard: float, step_months: int) -> float:
 
 
 def _annual_to_step_params(mean: float, std: float, step_months: int) -> Tuple[float, float]:
-    """Rough conversion of annual mean/std to per-step for normal returns."""
+    """Convert annual return mean/std to per-step approximations for normal draws.
+
+    Portfolio returns are modeled with a normal draw per simulation step. To
+    preserve the annualized statistics, the mean is divided by the number of
+    steps per year and the standard deviation is scaled by the square root of
+    steps (per Brownian motion properties). This keeps volatility consistent
+    even if the caller changes the simulation cadence.
+    """
     steps_per_year = 12.0 / step_months
     step_mean = mean / steps_per_year
     step_std = std / math.sqrt(steps_per_year)
@@ -46,6 +70,14 @@ def _calc_monthly_cash_flow(
     month_index: int,
     comp_adjust_factor: float,
 ) -> float:
+    """Compute after-tax monthly cash minus COL, including vesting and one-time events.
+
+    The calculation rolls up base salary, expected bonus (probability-weighted),
+    linearly vesting equity after any cliff, and scheduled one-time cash flows.
+    Compensation can be scaled by transition-driven adjustments, taxes are
+    applied at the location's rate, and cost of living is deducted to yield net
+    disposable cash for the month.
+    """
     comp = state.compensation
     if not comp:
         income = 0.0
@@ -65,6 +97,13 @@ def _calc_monthly_cash_flow(
 
 
 def _npv(cash_flows: List[float], discount_rate: float, step_months: int, horizon_months: int) -> float:
+    """Discount cash flows to present value through the specified horizon.
+
+    The function iterates step-wise, stopping once the time index exceeds the
+    requested horizon, and applies a continuous compounding approximation using
+    the real discount rate. It sums only the portion of the stream inside the
+    horizon to keep 5-year and 10-year NPV views cleanly separated.
+    """
     total = 0.0
     for i, cf in enumerate(cash_flows):
         t_months = i * step_months
@@ -75,12 +114,24 @@ def _npv(cash_flows: List[float], discount_rate: float, step_months: int, horizo
 
 
 def _scenario_label(strategy: Strategy, initial_state_id: str, states: Dict[str, CareerState]) -> str:
+    """Build a readable scenario label combining strategy name and starting state label.
+
+    Human-friendly labels make charts and tables easier to interpret. When a
+    state id is missing from the lookup (should be rare), the id itself is used
+    to avoid hiding data behind an exception.
+    """
     state_label = states.get(initial_state_id).label if initial_state_id in states else initial_state_id
     return f"{strategy.name} | start: {state_label}"
 
 
 @dataclass
 class _RunResult:
+    """Container for metrics from a single Monte Carlo path.
+
+    Tracks discounted value snapshots, unemployment spell durations, portfolio
+    liquidity ratios, pay haircut events, and aggregate non-financial scores.
+    These values are later aggregated across runs to form scenario-level stats.
+    """
     npv_short: float
     npv_long: float
     final_portfolio_short: float
@@ -98,6 +149,13 @@ class _RunResult:
 
 
 def _resolve_max_workers(max_workers: int | None, runs: int) -> int:
+    """Bound pool size by requested max, run count, and CPU availability.
+
+    The simulation fan-out should never oversubscribe CPUs or spawn more workers
+    than Monte Carlo runs. This helper reconciles the user's requested maximum
+    with the number of runs and the host's CPU count, always returning at least
+    one worker.
+    """
     if runs <= 1:
         return 1
     if max_workers is None:
@@ -106,10 +164,24 @@ def _resolve_max_workers(max_workers: int | None, runs: int) -> int:
 
 
 def _chunk(items: List[Any], size: int) -> List[List[Any]]:
+    """Split a list into fixed-size batches to feed worker pools.
+
+    Batching reduces overhead when mapping work across processes or threads by
+    letting each worker chew through a handful of seeds at once. The final batch
+    may be smaller if the list does not divide evenly, but all items remain in
+    original order to keep RNG spawning deterministic.
+    """
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
 def _choose_executor(parallel: bool, executor: str, rng: Any) -> str:
+    """Pick executor mode respecting parallel flag, requested type, and RNG picklability.
+
+    Process pools require picklable RNGs; when a caller passes a custom Generator
+    we fall back to single-threaded execution to avoid serialization errors.
+    Invalid executor hints default to process pools because they isolate random
+    streams better than threads for CPU-bound work.
+    """
     if not parallel:
         return "none"
     if rng is not None and not isinstance(rng, np.random.Generator):
@@ -126,6 +198,17 @@ def simulate_config(
     max_workers: int | None = None,
     executor: str = "process",
 ) -> SimulationResult:
+    """Run all strategy x initial-state scenarios and assemble summary dashboards.
+
+    The engine validates the DAG for time monotonicity, builds lookup tables for
+    states, locations, and transitions, and then iterates every strategy/start
+    pairing. Each pairing produces both short- and long-horizon results, which
+    are optionally computed in parallel. Outputs include best-per-horizon picks,
+    downside aggregation, sensitivity sweeps, and the assumptions used so the
+    frontend can render explanations alongside metrics.
+    """
+    # Each strategy x initial state yields short/long horizon scenarios.
+    # Validates DAG ordering, then dispatches to `_simulate_scenario` (parallel aware).
     settings = override_settings or config.simulation_settings
     states: Dict[str, CareerState] = {s.id: s for s in config.career_states}
     locations: Dict[str, Location] = {l.id: l for l in config.locations}
@@ -195,6 +278,16 @@ def _simulate_single_run(
     settings: SimulationSettings,
     rng: Any,
 ) -> _RunResult:
+    """Simulate one full career path for a strategy/start pairing.
+
+    The loop advances in simulation steps, accruing cash flows, compounding
+    investment returns, tracking unemployment streaks, and applying transition
+    hazards. It records liquidity ratios versus cost of living, pay haircut
+    events upon re-entry, and non-financial scores (identity, enjoyment,
+    location fit) so that later aggregation can blend financial and qualitative
+    outcomes.
+    """
+    # Tracks unemployment spells, pay haircuts, location exposure, and non-financial scores.
     horizon_long_months = settings.horizon_years_long * 12
     horizon_short_months = settings.horizon_years_short * 12
     step_months = settings.time_step_months
@@ -316,6 +409,12 @@ def _run_batch(
     settings: SimulationSettings,
     seed_batch: List[np.random.SeedSequence],
 ) -> List[_RunResult]:
+    """Execute a batch of single-run simulations for provided seed sequences.
+
+    Worker pools consume this helper to keep the batch signature picklable. Each
+    seed in the batch drives an independent RNG to ensure reproducibility across
+    processes/threads without cross-talk in random streams.
+    """
     results: List[_RunResult] = []
     for seq in seed_batch:
         rng = np.random.default_rng(seq)
@@ -335,10 +434,21 @@ def _run_batch(
 
 
 def _run_batch_process(args: Tuple[Any, ...]) -> List[_RunResult]:
+    """ProcessPool adapter that delegates to `_run_batch`.
+
+    The thin wrapper exists because ProcessPoolExecutor expects a single
+    positional argument; unpacking keeps the simulation logic centralized.
+    """
     return _run_batch(*args)
 
 
 def _run_batch_thread(args: Tuple[Any, ...]) -> List[_RunResult]:
+    """ThreadPool adapter that delegates to `_run_batch`.
+
+    Thread pools share the same core logic as process pools; this shim mirrors
+    `_run_batch_process` for readability while reusing the common simulation
+    function.
+    """
     # Thread pool fallback shares code with process pool; kept separate for clarity.
     return _run_batch(*args)
 
@@ -358,6 +468,14 @@ def _simulate_scenario(
     max_workers: int | None = None,
     executor: str = "process",
 ) -> Tuple[ScenarioResult, ScenarioResult]:
+    """Run many Monte Carlo paths for one strategy/start and return short/long results.
+
+    This function orchestrates RNG seeding, optional parallel dispatch, and the
+    aggregation of run-level metrics into scenario-level stats. It intentionally
+    computes both horizons from the same set of runs to keep results comparable,
+    and it respects caller hints about executor type while defaulting to process
+    pools for CPU-heavy workloads.
+    """
     runs = settings.num_runs_per_scenario
     if runs <= 0:
         raise ValueError("num_runs_per_scenario must be positive")
@@ -491,6 +609,14 @@ def _select_transition(
     settings: SimulationSettings,
     rng: np.random.Generator,
 ) -> Tuple[Transition | None, int]:
+    """Choose an eligible transition (or stay) using per-step hazards after strategy guards.
+
+    The selection filters out moves that violate strategy constraints (location
+    bans, paycut floors, minimum tenure) and converts annual hazards into
+    per-step probabilities. Remaining options are normalized with a residual
+    stay-put probability, then sampled via the provided RNG. The function
+    returns both the chosen transition and any lag months to add to the clock.
+    """
     transitions = transitions_by_from.get(state_id, [])
     if not transitions:
         return None, 0
@@ -531,6 +657,11 @@ def _select_transition(
 
 
 def _total_comp(comp: Compensation | None) -> float:
+    """Compute expected annual compensation (base plus probability-weighted bonus).
+
+    Equity and one-time cash flows are excluded because this helper is used
+    primarily for paycut comparisons when transitioning between employed states.
+    """
     if not comp:
         return 0.0
     return comp.base_annual + comp.bonus_target_annual * comp.bonus_prob_pay
@@ -544,6 +675,14 @@ def _downside_metrics(
     lower_pay_reentry: np.ndarray,
     haircut_values: List[float],
 ) -> Dict[str, Any]:
+    """Aggregate downside probabilities and median pay haircut over runs.
+
+    Liquidity ratios benchmark portfolio value against monthly cost of living,
+    unemployment arrays flag duration thresholds, and re-entry flags capture
+    whether returning to work came with a pay cut. Metrics are averaged to yield
+    scenario-level probabilities, and pay haircuts report the median to reduce
+    sensitivity to outliers.
+    """
     probs = lambda arr: float(np.mean(arr))
     return {
         "p_liquid_lt_1x_col": probs(min_ratio < 1.0),
@@ -557,6 +696,12 @@ def _downside_metrics(
 
 
 def _portfolio_stats(final_values: np.ndarray) -> Dict[str, Any]:
+    """Summarize portfolio values with percentiles and mean for reporting.
+
+    Percentiles provide a sense of downside/typical/upside outcomes while the
+    arithmetic mean offers a simple reference point for EV. All values are
+    coerced to float for JSON friendliness and to avoid numpy scalar surprises.
+    """
     return {
         "p50": float(np.percentile(final_values, 50)),
         "p10": float(np.percentile(final_values, 10)),
@@ -566,6 +711,13 @@ def _portfolio_stats(final_values: np.ndarray) -> Dict[str, Any]:
 
 
 def _utility(npv: np.ndarray, scoring_weights: ScoringWeights, downside: Dict[str, Any], nonfinancial: Dict[str, Any], risk_lambda: float) -> float:
+    """Risk-adjusted utility: financial EV minus variance penalty blended with qualitative scores.
+
+    Financial utility starts as expected value of NPV minus a variance-weighted
+    risk penalty (lambda controls aversion). That score is combined with
+    non-financial dimensions using configurable weights, with legacy currently
+    treated as a placeholder for future signals.
+    """
     ev = float(np.mean(npv))
     var = float(np.var(npv))
     financial_score = ev - risk_lambda * var
@@ -595,6 +747,13 @@ def _build_result(
     risk_lambda: float,
     cvar_alpha: float,
 ) -> ScenarioResult:
+    """Assemble a ScenarioResult with financial stats, risk metrics, and blended utility.
+
+    Computes expected value, variance, and CVaR (tail average) from the NPV
+    distribution, then calls `_utility` to incorporate non-financial scores via
+    the provided scoring weights. The label pairs strategy and start state to
+    keep downstream UI stable even if ids change.
+    """
     ev = float(np.mean(npv_arr))
     var = float(np.var(npv_arr))
     sorted_npv = np.sort(npv_arr)
@@ -617,6 +776,12 @@ def _build_result(
 
 
 def _best_for_horizon(results: List[ScenarioResult], horizon: int) -> ScenarioResult | None:
+    """Pick the highest-utility scenario for a target horizon, if any exist.
+
+    Filters scenarios by horizon to avoid mixing 5-year and 10-year outcomes and
+    returns the maximum by utility. Returning None when empty lets callers skip
+    rendering instead of fabricating placeholders.
+    """
     filtered = [r for r in results if r.horizon_years == horizon]
     if not filtered:
         return None
@@ -624,6 +789,11 @@ def _best_for_horizon(results: List[ScenarioResult], horizon: int) -> ScenarioRe
 
 
 def _aggregate_downside(results: List[ScenarioResult]) -> Dict[str, Any]:
+    """Average downside metrics by strategy across all scenarios.
+
+    Groups results by strategy id and computes mean values for each downside
+    metric so the frontend can display a compact dashboard keyed by strategy.
+    """
     by_strategy: Dict[str, Dict[str, List[float]]] = {}
     for res in results:
         bucket = by_strategy.setdefault(res.strategy_id, {k: [] for k in res.downside})
@@ -637,6 +807,14 @@ def _aggregate_downside(results: List[ScenarioResult]) -> Dict[str, Any]:
 
 
 def _run_sensitivity(config: ConfigPayload, results: List[ScenarioResult], settings: SimulationSettings) -> Dict[str, Any]:
+    """Perturb key inputs around the best scenario to show utility swings.
+
+    Sensitivity focuses on the top-utility scenario, nudging portfolio returns,
+    volatility, and transition probabilities up/down and re-running a reduced
+    set of simulations. The output helps identify which inputs drive the largest
+    utility changes, enabling a tornado chart in the UI. Run counts are capped
+    for speed because these are auxiliary what-if analyses.
+    """
     if not results:
         return {}
     base = max(results, key=lambda r: r.utility_score)
@@ -696,6 +874,12 @@ def _run_sensitivity(config: ConfigPayload, results: List[ScenarioResult], setti
 
 
 def _build_transition_map(transitions: List[Transition]) -> Dict[str, List[Transition]]:
+    """Group transitions by from_state for quick lookup during simulation.
+
+    The simulation loop repeatedly queries outbound edges for the current state;
+    pre-grouping avoids scanning the full list each step and keeps performance
+    predictable even as configs grow.
+    """
     mapping: Dict[str, List[Transition]] = {}
     for t in transitions:
         mapping.setdefault(t.from_state_id, []).append(t)
@@ -703,6 +887,13 @@ def _build_transition_map(transitions: List[Transition]) -> Dict[str, List[Trans
 
 
 def _validate_dag(states: Dict[str, CareerState], transitions_by_from: Dict[str, List[Transition]], settings: SimulationSettings) -> None:
+    """Enforce time ordering: disallow transitions to earlier-available states to avoid cycles.
+
+    The simulation assumes a DAG; this guard checks `t_months_min` to prevent
+    edges that would let a path loop backward in time and spin forever. It
+    raises a ValueError early so misconfigured graphs fail fast before running
+    expensive Monte Carlo sweeps.
+    """
     # Enforce time monotonicity guard (no transitions to earlier-available states).
     for from_id, edges in transitions_by_from.items():
         from_state = states.get(from_id)
@@ -719,5 +910,11 @@ def _validate_dag(states: Dict[str, CareerState], transitions_by_from: Dict[str,
 
 
 def _normalize_dict(d: Dict[str, float]) -> Dict[str, float]:
+    """Normalize dictionary values to sum to 1.0; safe when totals are zero.
+
+    Uses a fallback denominator of 1.0 to avoid division-by-zero, effectively
+    returning the original values when all inputs are zero. This keeps metrics
+    like location time shares numerically stable even when data is sparse.
+    """
     total = sum(d.values()) or 1.0
     return {k: v / total for k, v in d.items()}

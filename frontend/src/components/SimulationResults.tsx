@@ -1,3 +1,4 @@
+// Panels and charts to display simulation outputs (best scenarios, downside, sensitivity).
 import React from "react";
 import {
   Bar,
@@ -23,6 +24,13 @@ type BarDatum = {
   Utility: number;
 };
 
+/**
+ * SimulationResults renders every visualization tied to a simulation run: headline winners, bar
+ * charts for utility/EV/CVaR, downside tables, sensitivity tornado, and a scrolling list of all
+ * scenarios. It is intentionally stateless, deriving every chart input from the `result` prop so
+ * that rerunning simulations or swapping configs instantly rehydrates the UI. A lightweight
+ * `simulating` flag overlays an animated progress panel to keep users informed while waiting.
+ */
 const SimulationResults: React.FC<Props> = ({ result, simulating = false }) => {
   const showProgress = simulating;
 
@@ -35,6 +43,13 @@ const SimulationResults: React.FC<Props> = ({ result, simulating = false }) => {
     );
   }
 
+  /**
+   * Slice and reshape the raw result into chart-friendly structures. We separate 10-year and 5-year
+   * scenarios to avoid mixing horizons, then build bar data keyed by label so Recharts can map each
+   * metric to a stacked column. Domain calculations pad both sides to keep bars away from axes, and
+   * tick generation uses a "nice number" strategy so grid lines fall on human-friendly increments
+   * regardless of the absolute magnitude of the simulation outputs.
+   */
   const scenarios10 = (result.all_scenarios || []).filter((s: any) => s.horizon_years === 10);
   const scenarios5 = (result.all_scenarios || []).filter((s: any) => s.horizon_years === 5);
   const barData: BarDatum[] = scenarios10.map((s: any) => ({
@@ -130,6 +145,11 @@ const SimulationResults: React.FC<Props> = ({ result, simulating = false }) => {
   );
 };
 
+/**
+ * SummaryCard distills a single scenario into a compact snapshot with title, label, and headline
+ * metrics. It intentionally applies minimal formatting so numbers elsewhere in the dashboard render
+ * identically, and it gracefully falls back to a placeholder card when no scenario is provided.
+ */
 const SummaryCard: React.FC<{ title: string; scenario: any }> = ({ title, scenario }) => {
   if (!scenario) return <div style={summaryCard}>No data</div>;
   return (
@@ -143,6 +163,12 @@ const SummaryCard: React.FC<{ title: string; scenario: any }> = ({ title, scenar
   );
 };
 
+/**
+ * DownsideTable surfaces tail risk metrics for each strategy. It expects a record keyed by strategy
+ * id and renders probabilities for liquidity shortfalls and unemployment durations, formatting them
+ * as percentages for immediate readability. When the dataset is empty, it opts for a gentle message
+ * rather than an empty grid, signaling that simulations have not produced downside metrics yet.
+ */
 const DownsideTable: React.FC<{ data: Record<string, any> }> = ({ data }) => {
   const entries = Object.entries(data);
   if (!entries.length) return <div style={{ opacity: 0.6 }}>No downside metrics yet.</div>;
@@ -153,8 +179,8 @@ const DownsideTable: React.FC<{ data: Record<string, any> }> = ({ data }) => {
           <th style={th}>Strategy</th>
           <th style={th}>P(liquid&lt;1x)</th>
           <th style={th}>P(liquid&lt;2x)</th>
-          <th style={th}>Unemp ≥6m</th>
-          <th style={th}>Unemp ≥12m</th>
+          <th style={th}>Unemp &gt;=6m</th>
+          <th style={th}>Unemp &gt;=12m</th>
           <th style={th}>Lower pay reentry</th>
         </tr>
       </thead>
@@ -174,6 +200,12 @@ const DownsideTable: React.FC<{ data: Record<string, any> }> = ({ data }) => {
   );
 };
 
+/**
+ * ScenarioList provides a scrollable list of every scenario for a given horizon. It deliberately
+ * keeps formatting terse--showing only label and headline metrics--so the panel can accommodate many
+ * scenarios without overwhelming the user. The container caps its height and enables overflow to
+ * avoid pushing other charts off-screen.
+ */
 const ScenarioList: React.FC<{ scenarios: any[] }> = ({ scenarios }) => {
   return (
     <div style={{ background: "#0f172a", borderRadius: 10, border: "1px solid #1f2937", maxHeight: 250, overflow: "auto" }}>
@@ -187,7 +219,18 @@ const ScenarioList: React.FC<{ scenarios: any[] }> = ({ scenarios }) => {
   );
 };
 
+/**
+ * pct converts a probability expressed as a decimal into a whole-number percentage string. It clamps
+ * falsy values to zero so missing metrics do not propagate NaN into the UI, and rounds to the nearest
+ * integer to keep the table compact and easy to scan.
+ */
 const pct = (v: number) => `${Math.round((v || 0) * 100)}%`;
+
+/**
+ * formatCompact renders large numbers with single-letter magnitude suffixes so axis labels stay
+ * readable at different scales. The thresholds cover thousands, millions, and billions while falling
+ * back to whole numbers for smaller values, keeping a consistent display vocabulary across charts.
+ */
 const formatCompact = (n: number) => {
   const abs = Math.abs(n);
   if (abs >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}b`;
@@ -195,10 +238,30 @@ const formatCompact = (n: number) => {
   if (abs >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return n.toFixed(0);
 };
+
+/**
+ * formatOneDecimal shows a single decimal place, used primarily for axis ticks on symmetric charts
+ * like the tornado plot. Keeping precision fixed avoids jitter when domains change between runs.
+ */
 const formatOneDecimal = (n: number) => n.toFixed(1);
+
+/**
+ * formatTwoDecimal offers slightly more precision for tooltip content where space is less constrained
+ * and users expect finer-grained utility deltas.
+ */
 const formatTwoDecimal = (n: number) => n.toFixed(2);
+
+/**
+ * formatDelta prefixes a sign and formats to two decimals, making it clear whether a value reflects
+ * upside or downside relative to a base case in sensitivity outputs.
+ */
 const formatDelta = (n: number) => `${n >= 0 ? "+" : ""}${formatTwoDecimal(n)}`;
 
+/**
+ * paddedDomain computes a numeric range expanded by a padding ratio so chart elements never sit
+ * directly on the axes. When the data is degenerate (all zeros or a single value), it enforces a
+ * minimum span to keep Recharts happy and ensures both positive and negative space are represented.
+ */
 const paddedDomain = (vals: number[], padRatio = 0.08): [number, number] => {
   if (!vals.length) return [0, 1];
   const min = Math.min(...vals, 0);
@@ -208,6 +271,11 @@ const paddedDomain = (vals: number[], padRatio = 0.08): [number, number] => {
   return [min - pad, max + pad];
 };
 
+/**
+ * paddedSymmetricDomain creates a balanced range around zero for charts where negative and positive
+ * deltas are equally important (e.g., tornado plots). It calculates the largest absolute magnitude
+ * and adds proportional padding so bars do not hug the axis even when sensitivity is small.
+ */
 const paddedSymmetricDomain = (vals: number[], padRatio = 0.08): [number, number] => {
   const maxAbs = Math.max(...vals.map((v) => Math.abs(v)), 0);
   const pad = maxAbs === 0 ? 1 : maxAbs * padRatio;
@@ -215,6 +283,12 @@ const paddedSymmetricDomain = (vals: number[], padRatio = 0.08): [number, number
   return [-bound, bound];
 };
 
+/**
+ * buildTicks generates a "nice" set of axis ticks given a numeric domain. It computes an initial step
+ * size from the span, snaps that step to human-friendly intervals via `niceStep`, then anchors ticks
+ * at multiples of the step while ensuring zero is always included. Safety caps prevent runaway loops
+ * when domains are pathological.
+ */
 const buildTicks = ([min, max]: [number, number], target = 6): number[] => {
   if (!Number.isFinite(min) || !Number.isFinite(max)) return [0];
   if (min === max) {
@@ -238,6 +312,11 @@ const buildTicks = ([min, max]: [number, number], target = 6): number[] => {
   return ticks;
 };
 
+/**
+ * niceStep rounds a raw tick interval to a base-10 friendly value (1, 2, 5, or 10 times a power of
+ * ten). This mirrors the "nice numbers" approach used in charting libraries to keep grid lines on
+ * intuitive boundaries regardless of the magnitude of the data.
+ */
 const niceStep = (raw: number): number => {
   const exp = Math.floor(Math.log10(Math.max(raw, 1e-12)));
   const f = raw / Math.pow(10, exp);
@@ -249,6 +328,11 @@ const niceStep = (raw: number): number => {
   return nf * Math.pow(10, exp);
 };
 
+/**
+ * TornadoTooltip customizes the sensitivity chart hover content. It spells out the base utility and
+ * the absolute utilities at the low/high perturbations, pairing each with a signed delta so users
+ * can quickly see both direction and magnitude of impact without decoding the bar lengths alone.
+ */
 const TornadoTooltip = ({ active, payload, label }: any) => {
   if (!active || !payload || !payload.length) return null;
   const row = payload[0].payload;
@@ -278,6 +362,11 @@ const summaryCard: React.CSSProperties = {
 const th: React.CSSProperties = { textAlign: "left", padding: "6px 4px", borderBottom: "1px solid #1f2937" };
 const td: React.CSSProperties = { padding: "6px 4px", borderBottom: "1px solid #1f2937" };
 
+/**
+ * LiveProgress overlays an animated status panel while simulations run. It uses pure CSS animation
+ * (embedded in a style tag) to avoid pulling in additional dependencies, and it intentionally covers
+ * the result grid with a blurred backdrop to signal that data is temporarily stale during the run.
+ */
 const LiveProgress: React.FC = () => (
   <>
     <style>{progressCss}</style>

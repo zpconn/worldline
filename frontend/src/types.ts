@@ -1,3 +1,4 @@
+// Shared TypeScript types mirroring backend models for configs and results.
 export type Location = {
   id: string;
   name: string;

@@ -1,3 +1,4 @@
+// JSON editor/preview with apply hook back into the builder state.
 import React from "react";
 
 type Props = {
@@ -8,6 +9,13 @@ type Props = {
   helperText?: string;
 };
 
+/**
+ * ConfigEditor is a focused JSON textarea that mirrors the structured builder. It keeps no internal
+ * state of its own; instead, it streams all changes up through `onChange` so the parent can keep a
+ * canonical string copy and validate it. When `onApply` is provided, the component renders a button
+ * that triggers the parent's parse-and-hydrate flow, allowing users to experiment with raw JSON and
+ * then synchronize their edits back into the normalized config with a single action.
+ */
 const ConfigEditor: React.FC<Props> = ({ value, onChange, onApply, parseError, helperText }) => {
   return (
     <div style={editorRoot}>

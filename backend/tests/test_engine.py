@@ -1,3 +1,5 @@
+"""Regression/behavior tests for the Worldline simulation engine."""
+
 import math
 import numpy as np
 import pytest

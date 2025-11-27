@@ -1,3 +1,5 @@
+// Root SPA wiring together config builder, JSON editor, DAG view, and simulation panels.
+// Orchestrates API calls to save configs, run simulations, and export results.
 import { CSSProperties, useEffect, useState } from "react";
 import axios from "axios";
 import ConfigEditor from "./components/ConfigEditor";
@@ -8,6 +10,7 @@ import { ConfigPayload } from "./types";
 
 const API_BASE = "http://localhost:8000";
 
+// Default starter configuration used to seed the builder and backend on load.
 const sampleConfig: ConfigPayload = {
   locations: [
     { id: "home", name: "Home City", col_annual: 60000, state_tax_rate: 0.05 },
@@ -173,6 +176,14 @@ const sampleConfig: ConfigPayload = {
   },
 };
 
+/**
+ * App is the top-level orchestrator for the Worldline SPA. It owns the authoritative config object,
+ * keeps a JSON text mirror in sync with the structured builder, and mediates network calls to the
+ * backend for saving, simulating, and exporting results. The component also lays out the entire
+ * experience: an interactive config builder, a JSON editor, a DAG visualization, and result panels.
+ * Every interaction path (builder changes, JSON edits, save, run, export) funnels through here so
+ * the user can round-trip between structured and free-form editing without losing state.
+ */
 function App() {
   const [config, setConfig] = useState<ConfigPayload>(sampleConfig);
   const [configText, setConfigText] = useState<string>(() => JSON.stringify(sampleConfig, null, 2));
@@ -181,10 +192,22 @@ function App() {
   const [saving, setSaving] = useState(false);
   const [simulating, setSimulating] = useState(false);
 
+  /**
+   * Keep the JSON text area in lockstep with the structured config builder. Any change made via the
+   * builder rewrites the text representation so users always see exactly what will be sent to the
+   * backend, eliminating drift between the two editing surfaces.
+   */
   useEffect(() => {
     setConfigText(JSON.stringify(config, null, 2));
   }, [config]);
 
+  /**
+   * Parse JSON from the free-form editor and push it into the structured builder state. The function
+   * purposefully round-trips the parsed object back to pretty-printed JSON so the text area stays in
+   * canonical shape, and it surfaces syntax errors inline instead of throwing. This lets users type
+   * arbitrary edits, validate them with a single click, and immediately sync the builder widgets to
+   * match the exact shape the backend will consume.
+   */
   const applyJsonToBuilder = () => {
     try {
       const parsed = JSON.parse(configText) as ConfigPayload;
@@ -196,6 +219,12 @@ function App() {
     }
   };
 
+  /**
+   * Persist the current config to the backend API. When `silent` is false the UI toggles the Saving
+   * badge to reassure users the action is in-flight; when true (used by runSimulation) we avoid the
+   * spinner to reduce flicker. Errors bubble to the caller--this helper is intentionally thin so the
+   * caller controls user-facing messaging around the save lifecycle.
+   */
   const saveConfig = async (silent = false) => {
     if (!silent) setSaving(true);
     try {
@@ -205,6 +234,12 @@ function App() {
     }
   };
 
+  /**
+   * Run Monte Carlo simulations by first persisting the latest config and then requesting results.
+   * The function makes a deliberate two-step call (save then simulate) because the backend infers
+   * simulation inputs from saved state rather than a request body. The simulating flag gates both
+   * button state and the live progress overlay in result panels so users cannot double-submit.
+   */
   const runSimulation = async () => {
     setSimulating(true);
     try {
@@ -216,6 +251,12 @@ function App() {
     }
   };
 
+  /**
+   * Fetch the last simulation payload from the backend and trigger a browser download so users can
+   * inspect outputs offline. The function both updates in-memory result state (so the UI refreshes)
+   * and constructs a Blob-backed object URL to force a JSON file download without leaving the page.
+   * This is intentionally synchronous from the user's perspective to make exporting a one-click act.
+   */
   const exportJson = async () => {
     const res = await axios.get(`${API_BASE}/export`);
     setResult(res.data);
@@ -227,6 +268,11 @@ function App() {
     link.click();
   };
 
+  /**
+   * On mount we silently push the starter config to the backend so the server has a baseline to work
+   * with. The dependency is intentionally empty and the linter suppression keeps React from treating
+   * `saveConfig` identity changes as a trigger--this effect should only run once to seed state.
+   */
   useEffect(() => {
     void saveConfig(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -334,6 +380,12 @@ const secondaryButtonStyle: CSSProperties = {
 
 export default App;
 
+/**
+ * Instructions renders a compact primer on how to use Worldline and what each key term means. It is
+ * kept client-side so we can evolve messaging quickly without backend changes, and it provides the
+ * vocabulary users need to interpret results (EV, CVaR, risk lambda) alongside the linear workflow
+ * they should follow (set locations, define states/transitions, choose strategies, then simulate).
+ */
 const Instructions = () => (
   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
     <div>

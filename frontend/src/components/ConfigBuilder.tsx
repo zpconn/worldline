@@ -1,3 +1,4 @@
+// Form-like builder for locations, states, transitions, strategies, and weights.
 import React from "react";
 import {
   CareerState,
@@ -14,28 +15,71 @@ type Props = {
   onChange: (config: ConfigPayload) => void;
 };
 
+/**
+ * ConfigBuilder renders a form-driven facade over the raw configuration schema. It lets users add,
+ * edit, and remove every domain primitive (locations, career states, transitions, strategies, and
+ * simulation knobs) while keeping the parent component as the single source of truth. The component
+ * favors small, composable helpers to mutate slices of the config immutably so each input stays
+ * responsive and React can reconcile updates efficiently.
+ */
 const ConfigBuilder: React.FC<Props> = ({ config, onChange }) => {
+  /**
+   * Helper to immutably update a config section while preserving other fields. By fanning updates
+   * through this function, every sub-editor (locations, transitions, strategies) can surgically
+   * replace its slice without worrying about stale references or shallow copies. This pattern keeps
+   * React's change detection happy and prevents accidental state loss when multiple sections update.
+   */
   const updateConfig = <K extends keyof ConfigPayload>(key: K, value: ConfigPayload[K]) => {
     onChange({ ...config, [key]: value });
   };
 
+  /**
+   * Parse numeric inputs from string fields while providing a deterministic fallback. Text inputs
+   * can emit empty strings or non-numeric garbage; coercing through Number and then guarding with
+   * Number.isFinite keeps downstream calculations from receiving NaN and derailing the UI. The
+   * fallback value is chosen per-call so each field can define a sensible default.
+   */
   const numberVal = (val: string, fallback = 0): number => {
     const n = Number(val);
     return Number.isFinite(n) ? n : fallback;
   };
 
+  /**
+   * Update portfolio assumptions while preserving other config fields. Portfolio settings drive the
+   * simulated investment account and are conceptually independent from the DAG, so updates merge the
+   * incoming partial with the existing object to avoid clobbering sibling properties the user did
+   * not touch. This keeps the builder resilient to partial edits from multiple inputs at once.
+   */
   const setPortfolio = (partial: Partial<PortfolioSettings>) => {
     updateConfig("portfolio_settings", { ...config.portfolio_settings, ...partial });
   };
 
+  /**
+   * Update scoring weights with an immutable merge. The scoring weights influence composite utility
+   * calculations on the backend; by merging partials we allow each numeric input to update just its
+   * own weight while the rest stay intact. This avoids forcing the user to re-enter the full weight
+   * vector every time they tweak one dial.
+   */
   const setScoring = (partial: Partial<ConfigPayload["scoring_weights"]>) => {
     updateConfig("scoring_weights", { ...config.scoring_weights, ...partial });
   };
 
+  /**
+   * Update simulation settings such as horizon lengths, cadence, and sampling. These parameters
+   * control the Monte Carlo engine, so the helper merges partial updates to avoid discarding values
+   * the user has already tuned. Keeping this function narrow also makes it easy to reason about
+   * which inputs will trigger re-runs of the simulation downstream.
+   */
   const setSimulation = (partial: Partial<ConfigPayload["simulation_settings"]>) => {
     updateConfig("simulation_settings", { ...config.simulation_settings, ...partial });
   };
 
+  /**
+   * Append a new location entry seeded with conservative placeholder values. Locations underpin cost
+   * of living, tax considerations, and preference filters in strategies, so creating a new one
+   * generates a unique id, a human-readable name, and baseline financial assumptions the user can
+   * immediately adjust. The function clones the list to maintain immutability guarantees.
+   */
   const addLocation = () => {
     const next = [
       ...config.locations,
@@ -49,16 +93,34 @@ const ConfigBuilder: React.FC<Props> = ({ config, onChange }) => {
     updateConfig("locations", next);
   };
 
+  /**
+   * Apply partial edits to a specific location by index. The update is index-based rather than
+   * id-based because the UI already has the array index at render time, and mapping over the array
+   * with a conditional replacement keeps the operation immutable. This prevents unintended ripple
+   * effects on other locations while still giving each input full control over its target fields.
+   */
   const updateLocation = (idx: number, partial: Partial<ConfigPayload["locations"][number]>) => {
     const next = config.locations.map((loc, i) => (i === idx ? { ...loc, ...partial } : loc));
     updateConfig("locations", next);
   };
 
+  /**
+   * Remove a location by index. The function filters out the targeted element and leaves the rest of
+   * the list untouched, which makes deletions predictable and reversible through external undo
+   * mechanisms. Because strategies and states reference locations by id, downstream callers are
+   * responsible for keeping those references in sync after a removal.
+   */
   const removeLocation = (idx: number) => {
     const next = config.locations.filter((_, i) => i !== idx);
     updateConfig("locations", next);
   };
 
+  /**
+   * Generate a baseline compensation package for new career states. Providing a factory function
+   * instead of a constant ensures each state receives a fresh object (avoiding accidental shared
+   * references) and encapsulates the default mix of salary, bonus, and equity so changes propagate
+   * consistently whenever a new state is added or toggled back to paid.
+   */
   const defaultCompensation = (): Compensation => ({
     base_annual: 150000,
     bonus_target_annual: 30000,
@@ -67,6 +129,13 @@ const ConfigBuilder: React.FC<Props> = ({ config, onChange }) => {
     one_times: [],
   });
 
+  /**
+   * Append a new career state pre-populated with sensible defaults. The helper chooses the first
+   * known location as the starting geography, seeds compensation with the default template, and
+   * initializes wellbeing/identity scores to mid-range values so charts and constraints behave
+   * immediately. Using a generated id tied to the current length avoids collisions during rapid
+   * entry and keeps the array append immutable.
+   */
   const addState = () => {
     const firstLocation = config.locations[0]?.id || "home";
     const next: CareerState = {
@@ -85,21 +154,44 @@ const ConfigBuilder: React.FC<Props> = ({ config, onChange }) => {
     updateConfig("career_states", [...config.career_states, next]);
   };
 
+  /**
+   * Apply partial edits to a career state by index. The function copies the array, replaces only the
+   * targeted state, and leaves all other entries untouched, ensuring React can reconcile without
+   * unnecessary re-renders. This pattern also protects against unintentional wholesale replacement
+   * of the states list when only one field needs to change.
+   */
   const updateState = (idx: number, partial: Partial<CareerState>) => {
     const next = config.career_states.map((s, i) => (i === idx ? { ...s, ...partial } : s));
     updateConfig("career_states", next);
   };
 
+  /**
+   * Remove a career state by index. Filtering by index instead of id aligns with how the UI renders
+   * and keeps the function free of lookup logic, but it also means any external references (like
+   * transitions pointing at the removed state) must be reconciled elsewhere to avoid dangling ids.
+   */
   const removeState = (idx: number) => {
     const next = config.career_states.filter((_, i) => i !== idx);
     updateConfig("career_states", next);
   };
 
+  /**
+   * Toggle whether a state has compensation. When disabling pay we null out the compensation object;
+   * when enabling we regenerate the default package to avoid sharing references between states. This
+   * lets the UI represent unpaid sabbaticals or unemployment explicitly while preserving the ability
+   * to reintroduce pay with a clean slate.
+   */
   const toggleCompensation = (idx: number) => {
     const state = config.career_states[idx];
     updateState(idx, { compensation: state.compensation ? null : defaultCompensation() });
   };
 
+  /**
+   * Apply partial edits to a state's compensation, guarding against unpaid states. Because unpaid
+   * states store `compensation` as null, the function early-returns if there is no package to merge.
+   * When present, the merge strategy preserves untouched fields and creates a new compensation object
+   * so React sees a change and re-renders dependent inputs.
+   */
   const updateCompensation = (idx: number, partial: Partial<Compensation>) => {
     const state = config.career_states[idx];
     if (!state.compensation) return;
@@ -107,6 +199,12 @@ const ConfigBuilder: React.FC<Props> = ({ config, onChange }) => {
     updateState(idx, { compensation: next });
   };
 
+  /**
+   * Add a default equity grant to a given state. Grants are appended rather than replaced, and the
+   * function exits quietly if the state is unpaid because equity is undefined in that context.
+   * Seeding a recognizable RSU template gives users a starting point they can quickly customize for
+   * value, vesting schedule, and cliff.
+   */
   const addEquity = (stateIdx: number) => {
     const state = config.career_states[stateIdx];
     if (!state.compensation) return;
@@ -117,6 +215,11 @@ const ConfigBuilder: React.FC<Props> = ({ config, onChange }) => {
     updateCompensation(stateIdx, { equity: grants });
   };
 
+  /**
+   * Apply partial edits to a specific equity grant within a state's compensation. The function maps
+   * over the grants array, replacing only the targeted index to maintain immutability. If the state
+   * has no compensation, it quietly exits to avoid throwing in response to UI toggles that hide pay.
+   */
   const updateEquity = (stateIdx: number, grantIdx: number, partial: Partial<EquityGrant>) => {
     const state = config.career_states[stateIdx];
     if (!state.compensation) return;
@@ -124,6 +227,11 @@ const ConfigBuilder: React.FC<Props> = ({ config, onChange }) => {
     updateCompensation(stateIdx, { equity: grants });
   };
 
+  /**
+   * Remove a specific equity grant by index. Filtering produces a new array so React can detect the
+   * change, and the guard against missing compensation avoids runtime errors when toggling between
+   * paid and unpaid states. This keeps the grants list consistent with user actions in the UI.
+   */
   const removeEquity = (stateIdx: number, grantIdx: number) => {
     const state = config.career_states[stateIdx];
     if (!state.compensation) return;
@@ -131,6 +239,12 @@ const ConfigBuilder: React.FC<Props> = ({ config, onChange }) => {
     updateCompensation(stateIdx, { equity: grants });
   };
 
+  /**
+   * Append a new transition edge between career states with sensible defaults. Because transitions
+   * require valid endpoints, the function picks the first two states when available and falls back
+   * to a self-loop if only one exists. Default hazard parameters (probabilities, lag, guards) are
+   * set to conservative values so users can see the edge immediately and refine its behavior.
+   */
   const addTransition = () => {
     const from = config.career_states[0]?.id || "state-1";
     const to = config.career_states[1]?.id || from;
@@ -148,21 +262,43 @@ const ConfigBuilder: React.FC<Props> = ({ config, onChange }) => {
     updateConfig("transitions", [...config.transitions, next]);
   };
 
+  /**
+   * Apply partial edits to a transition. Mapping with a conditional replacement keeps the update
+   * immutable and scoped to the intended edge. This approach also preserves extra fields added later
+   * by the backend because we merge into the existing object rather than recreating it from scratch.
+   */
   const updateTransition = (idx: number, partial: Partial<Transition>) => {
     const next = config.transitions.map((t, i) => (i === idx ? { ...t, ...partial } : t));
     updateConfig("transitions", next);
   };
 
+  /**
+   * Update the delta section of a transition, which captures financial and identity shocks tied to
+   * the move. Because `delta` itself is optional, the function first ensures there is an object to
+   * merge into, then overlays the supplied partial. This keeps null/undefined distinctions intact so
+   * the backend can differentiate between "no change" and "explicitly zero".
+   */
   const updateTransitionDelta = (idx: number, partial: Partial<NonNullable<Transition["delta"]>>) => {
     const t = config.transitions[idx];
     updateTransition(idx, { delta: { ...(t.delta || {}), ...partial } });
   };
 
+  /**
+   * Remove a transition by index. Filtering keeps the operation immutable and ordered, which matters
+   * for readability in the UI list. Downstream consumers referencing transition ids should reconcile
+   * independently, mirroring how state and location deletions are handled.
+   */
   const removeTransition = (idx: number) => {
     const next = config.transitions.filter((_, i) => i !== idx);
     updateConfig("transitions", next);
   };
 
+  /**
+   * Append a new strategy, seeding it to start from the first available state. Strategies orchestrate
+   * how transitions are chosen during simulations, so the helper gives them a name, description, and
+   * permissive defaults for paycut floors and location lists to minimize user friction. By cloning
+   * and appending, the operation preserves immutability for predictable React updates.
+   */
   const addStrategy = () => {
     const defaultState = config.career_states[0]?.id ? [config.career_states[0].id] : [];
     const next: Strategy = {
@@ -178,21 +314,43 @@ const ConfigBuilder: React.FC<Props> = ({ config, onChange }) => {
     updateConfig("strategies", [...config.strategies, next]);
   };
 
+  /**
+   * Apply partial edits to a strategy. The merge approach retains any unedited fields (like nested
+   * rules or location preferences) and keeps the update scoped to a single strategy record. This
+   * prevents collateral changes when multiple inputs inside the same card fire on the same frame.
+   */
   const updateStrategy = (idx: number, partial: Partial<Strategy>) => {
     const next = config.strategies.map((s, i) => (i === idx ? { ...s, ...partial } : s));
     updateConfig("strategies", next);
   };
 
+  /**
+   * Toggle membership of a string within an array, returning a new array each time. This helper is
+   * shared between checkboxes for preferred/disallowed locations and initial state choices, keeping
+   * the toggle logic centralized. Returning the same array shape (either filtered or appended) helps
+   * React track identity changes and keeps immutability intact.
+   */
   const toggleArrayValue = (arr: string[], value: string): string[] => {
     if (!value) return arr;
     return arr.includes(value) ? arr.filter((v) => v !== value) : [...arr, value];
   };
 
+  /**
+   * Toggle whether a state is an allowed initial choice for a given strategy. It delegates the array
+   * membership logic to `toggleArrayValue` and then writes back the updated list for that strategy.
+   * This keeps the UI checkboxes and the underlying config in sync without manual array juggling.
+   */
   const toggleInitialChoice = (idx: number, stateId: string) => {
     const strategy = config.strategies[idx];
     updateStrategy(idx, { initial_choice_state_ids: toggleArrayValue(strategy.initial_choice_state_ids, stateId) });
   };
 
+  /**
+   * Toggle a location inside either the preferred or disallowed lists on a strategy. By accepting
+   * the key as a parameter, the same helper powers both checklists, reducing duplication while still
+   * keeping types narrow through `Pick`. The function clones the underlying array to maintain
+   * immutability and allow React to spot the change.
+   */
   const toggleLocationPref = (idx: number, key: "preferred_locations" | "disallowed_locations", locId: string) => {
     const strategy = config.strategies[idx];
     updateStrategy(idx, { [key]: toggleArrayValue(strategy[key], locId) } as Pick<Strategy, typeof key>);
@@ -412,6 +570,11 @@ const ConfigBuilder: React.FC<Props> = ({ config, onChange }) => {
   );
 };
 
+/**
+ * Section is a thin presentational wrapper that gives each logical chunk (locations, states, etc.)
+ * consistent framing. By keeping it here rather than in a shared design system we avoid external
+ * dependencies and can quickly tweak spacing or typography across the builder in one place.
+ */
 const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
   <div style={sectionBox}>
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
@@ -421,6 +584,11 @@ const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title
   </div>
 );
 
+/**
+ * LabeledInput standardizes labeled text fields across the builder. It accepts any string/number
+ * value and pushes edits upward immediately, leaving validation to the caller. Sharing this small
+ * component keeps spacing, typography, and focus styles uniform so the dense form stays legible.
+ */
 const LabeledInput: React.FC<{
   label: string;
   value: string | number;
@@ -439,6 +607,11 @@ const LabeledInput: React.FC<{
   </label>
 );
 
+/**
+ * SelectInput mirrors LabeledInput but wraps a native select element. It expects a list of label/
+ * value pairs and surfaces changes through the provided callback, letting the parent handle updates.
+ * Centralizing select styling ensures it blends visually with adjacent text inputs inside grid rows.
+ */
 const SelectInput: React.FC<{
   label: string;
   value: string;
@@ -457,6 +630,11 @@ const SelectInput: React.FC<{
   </label>
 );
 
+/**
+ * StatPill displays lightweight metrics at the top of the builder (counts of states, locations,
+ * transitions, and strategies). It intentionally stays dumb: it renders whatever number it receives
+ * without formatting so the caller can decide how to aggregate or localize values.
+ */
 const StatPill: React.FC<{ label: string; value: number }> = ({ label, value }) => (
   <div style={pill}>
     <div style={{ fontSize: 12, opacity: 0.7 }}>{label}</div>

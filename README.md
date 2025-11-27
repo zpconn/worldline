@@ -29,6 +29,14 @@ Worldline is a full-stack reference app for modeling a career as a directed acyc
 - **Choosing winners and sensitivity:** The best 5y and 10y scenarios are selected by utility. A small sensitivity sweep perturbs portfolio returns/volatility and transition probabilities to show how fragile the top result is.
 - **Assumptions reporting:** Returned results include the executor mode, worker count, run count, time step, risk penalty, and CVaR alpha used during the simulation.
 
+## How parallel execution works
+
+- The engine can run Monte Carlo paths in parallel; it chooses an executor via `_choose_executor(parallel, executor, rng)`, defaulting to "process" when parallel is allowed and the RNG is standard.
+- Worker count is bounded by `max_workers` (if provided) and the run count; `_resolve_max_workers` caps at CPU count to avoid oversubscription.
+- Seeds come from a root `SeedSequence`; batches of child seeds are handed to workers so serial vs parallel runs remain reproducible.
+- `ProcessPoolExecutor` is used for CPU isolation; `ThreadPoolExecutor` is used when requested or when the supplied RNG cannot be pickled.
+- If parallel is off or executor is "none", simulations run serially with one RNG per run, keeping determinism with the same seed inputs.
+
 ## Project layout
 
 - `backend/`: FastAPI + Python 3.11. Pydantic models, simulation engine, and API endpoints.

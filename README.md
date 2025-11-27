@@ -2,6 +2,33 @@
 
 Worldline is a full-stack reference app for modeling a career as a directed acyclic graph, applying strategies, and running Monte Carlo simulations to evaluate 5-year and 10-year outcomes.
 
+## What this app is for
+
+- Model a career as a graph of states (roles, locations, employment statuses) and transitions (moves, layoffs, promotions) instead of a single straight-line plan.
+- Encode preferences as strategies that emphasize or forbid certain moves, enforce paycut floors, and pick where you start.
+- Run repeated simulations to understand outcome distributions: expected value, downside, risk-penalized utility, and non-financial fit.
+- Compare strategies and starting points side-by-side, then export the raw data for deeper analysis.
+
+## How to use Worldline
+
+1. Launch the backend (`uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000`) and the frontend (`npm run dev` inside `frontend/`).
+2. Open http://localhost:5173. The app loads a sample config and posts it to the backend automatically.
+3. Use the **Interactive Config Builder** to add/edit locations, career states, transitions, strategies, and scoring weights. Every change updates the JSON preview.
+4. If you prefer editing JSON directly, adjust it in the **JSON Preview** and click **Apply** to push it back into the builder.
+5. Click **Save Config** to persist to the backend or **Run Simulations** to auto-save and simulate. Results populate the simulation panels and charts.
+6. Export the latest simulation payload with **Export JSON** for offline analysis or visualization.
+
+## How the simulation works (high level)
+
+- **Scenario expansion:** Each strategy combined with each initial state becomes a scenario. The engine runs separate Monte Carlo batches for short (5y) and long (10y) horizons.
+- **Time stepping:** Simulations advance in fixed steps (monthly by default). Annual transition hazards are converted to per-step probabilities; portfolio return mean/std are scaled to the step size.
+- **Cash flow + portfolio:** For the active state, the engine calculates after-tax income (base + expected bonus + vesting + one-time cash), subtracts cost of living, adds contributions (if positive cash), and applies a stochastic portfolio return. Relocation costs and compensation adjustments from transitions are applied when moves occur.
+- **Transition choice:** Eligible outgoing edges are filtered by strategy rules (disallowed locations, paycut floors, min time ordering). A weighted random draw picks a move or "stay" based on per-step probabilities and optional lag months.
+- **Tracking metrics per run:** The engine records unemployment duration, liquidity versus cost-of-living multiples, pay haircuts on re-entry, location time shares, wellbeing, and identity/brand scores to estimate career capital and enjoyment.
+- **Aggregating outcomes:** After all runs, it computes NPV (discounted cash flows), portfolio percentiles, downside probabilities (e.g., P(liquid < 1x COL), unemployment spells), and non-financial averages. Utility = financial expected value minus a variance penalty, then blended with career capital, enjoyment/identity, location fit, and legacy weights.
+- **Choosing winners and sensitivity:** The best 5y and 10y scenarios are selected by utility. A small sensitivity sweep perturbs portfolio returns/volatility and transition probabilities to show how fragile the top result is.
+- **Assumptions reporting:** Returned results include the executor mode, worker count, run count, time step, risk penalty, and CVaR alpha used during the simulation.
+
 ## Project layout
 
 - `backend/`: FastAPI + Python 3.11. Pydantic models, simulation engine, and API endpoints.
